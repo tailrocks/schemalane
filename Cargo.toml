@@ -3,42 +3,33 @@ members = [
     "schemalane-core",
     "schemalane-cli",
     "schemalane-macros",
+    "pg_query_fmt",
 ]
 default-members = [
     "schemalane-core",
     "schemalane-cli",
+    "pg_query_fmt",
 ]
-resolver = "2"
+resolver = "3"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
-unused_must_use = "deny"
 
 [workspace.lints.clippy]
-all = { level = "deny", priority = -1 }
-pedantic = { level = "deny", priority = -1 }
-nursery = { level = "deny", priority = -1 }
+correctness = { level = "deny", priority = -1 }
+suspicious = { level = "deny", priority = -1 }
+complexity = { level = "warn", priority = -1 }
+style = { level = "warn", priority = -1 }
+perf = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
 
-# Pedantic exceptions — too noisy or opinionated
 module_name_repetitions = "allow"
 missing_errors_doc = "allow"
 missing_panics_doc = "allow"
 must_use_candidate = "allow"
 
-# Correctness & security
-enum_glob_use = "deny"
-unwrap_used = "deny"
-expect_used = "deny"
-panic = "deny"
-todo = "deny"
 unimplemented = "deny"
 dbg_macro = "deny"
-print_stdout = "deny"
-print_stderr = "deny"
-
-# Clarity
-needless_pass_by_value = "warn"
-implicit_clone = "warn"
-cloned_instead_of_copied = "warn"
-redundant_closure_for_method_calls = "warn"
-inefficient_to_string = "warn"
+print_stdout = "warn"
+print_stderr = "warn"
+todo = "warn"

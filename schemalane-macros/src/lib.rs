@@ -1,6 +1,7 @@
 use proc_macro::TokenStream;
 use proc_macro2::Span;
 use quote::{format_ident, quote};
+use std::cmp::Ordering;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use syn::{LitStr, parse_macro_input};
@@ -66,8 +67,8 @@ pub fn embed_migrations(input: TokenStream) -> TokenStream {
         registration_tokens.push(quote! {
             migrator.register_rust_migration(
                 #script_lit,
-                ::schemalane_core::RustMigrationExecutor::new(|manager| {
-                    Box::pin(#module_ident::migration(manager))
+                ::schemalane_core::RustMigrationExecutor::new(|client| {
+                    Box::pin(#module_ident::migration(client))
                 }),
             );
         });
@@ -100,7 +101,7 @@ pub fn embed_migrations(input: TokenStream) -> TokenStream {
 struct RustMigrationFile {
     path: PathBuf,
     script: String,
-    version: Vec<u64>,
+    version: ParsedVersion,
 }
 
 fn discover_rust_migrations(dir: &Path) -> Result<Vec<RustMigrationFile>, String> {
@@ -146,7 +147,31 @@ fn discover_rust_migrations(dir: &Path) -> Result<Vec<RustMigrationFile>, String
     Ok(migrations)
 }
 
-fn parse_rust_migration_filename(file_name: &str) -> Result<Vec<u64>, String> {
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ParsedVersion(Vec<String>);
+
+impl PartialOrd for ParsedVersion {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for ParsedVersion {
+    fn cmp(&self, other: &Self) -> Ordering {
+        let max_len = self.0.len().max(other.0.len());
+        for idx in 0..max_len {
+            let left = self.0.get(idx).map_or("0", String::as_str);
+            let right = other.0.get(idx).map_or("0", String::as_str);
+            match compare_normalized_number(left, right) {
+                Ordering::Equal => {}
+                ordering => return ordering,
+            }
+        }
+        Ordering::Equal
+    }
+}
+
+fn parse_rust_migration_filename(file_name: &str) -> Result<ParsedVersion, String> {
     if !std::path::Path::new(file_name)
         .extension()
         .is_some_and(|ext| ext.eq_ignore_ascii_case("rs"))
@@ -162,48 +187,42 @@ fn parse_rust_migration_filename(file_name: &str) -> Result<Vec<u64>, String> {
             "invalid Rust migration filename '{file_name}': expected V<version>__<description>.rs"
         ));
     };
-    let Some((version_text, description)) = rest.split_once("__") else {
-        return Err(format!(
-            "invalid Rust migration filename '{file_name}': expected V<version>__<description>.rs"
-        ));
-    };
+    let (version_text, _description) = rest.split_once("__").unwrap_or((rest, ""));
 
     if version_text.is_empty() {
         return Err(format!(
             "invalid Rust migration filename '{file_name}': missing version"
         ));
     }
-    if description.is_empty() {
-        return Err(format!(
-            "invalid Rust migration filename '{file_name}': missing description"
-        ));
-    }
 
-    let mut version = Vec::new();
-    for part in version_text.split(['.', '_']) {
+    let mut parts = Vec::new();
+    for part in version_text.replace('_', ".").split('.') {
         if part.is_empty() || !part.chars().all(|ch| ch.is_ascii_digit()) {
             return Err(format!(
                 "invalid Rust migration filename '{file_name}': invalid version '{version_text}'"
             ));
         }
-        let number = part.parse::<u64>().map_err(|err| {
-            format!(
-                "invalid Rust migration filename '{file_name}': version parse error: {err}"
-            )
-        })?;
-        version.push(number);
+        parts.push(normalize_version_part(part));
     }
 
-    if !description
-        .chars()
-        .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '_')
-    {
-        return Err(format!(
-            "invalid Rust migration filename '{file_name}': invalid description '{description}'"
-        ));
+    while parts.len() > 1 && parts.last().is_some_and(|part| part == "0") {
+        parts.pop();
     }
 
-    Ok(version)
+    Ok(ParsedVersion(parts))
+}
+
+fn normalize_version_part(part: &str) -> String {
+    let trimmed = part.trim_start_matches('0');
+    if trimmed.is_empty() {
+        "0".to_owned()
+    } else {
+        trimmed.to_owned()
+    }
+}
+
+fn compare_normalized_number(left: &str, right: &str) -> Ordering {
+    left.len().cmp(&right.len()).then_with(|| left.cmp(right))
 }
 
 fn unique_module_ident(script: &str, used: &mut HashSet<String>) -> syn::Ident {
@@ -253,4 +272,49 @@ fn lit_str_from_path(path: &Path) -> LitStr {
 fn compile_error(message: impl AsRef<str>) -> TokenStream {
     let lit = LitStr::new(message.as_ref(), Span::call_site());
     quote! { compile_error!(#lit); }.into()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ParsedVersion, parse_rust_migration_filename};
+
+    fn parsed_version(parts: &[&str]) -> ParsedVersion {
+        ParsedVersion(parts.iter().map(|part| (*part).to_owned()).collect())
+    }
+
+    #[test]
+    fn parses_rust_migration_filename_with_dotted_description() {
+        let version = parse_rust_migration_filename("V10__seed.reference_data.rs")
+            .expect("dotted Rust migration description should parse");
+
+        assert_eq!(version, parsed_version(&["10"]));
+    }
+
+    #[test]
+    fn parses_rust_migration_filename_with_flyway_description() {
+        let version = parse_rust_migration_filename("V001_002__My-description.data load.RS")
+            .expect("Flyway-style Rust migration description should parse");
+
+        assert_eq!(version, parsed_version(&["1", "2"]));
+    }
+
+    #[test]
+    fn parses_rust_migration_filename_without_description() {
+        let version =
+            parse_rust_migration_filename("V1.rs").expect("description-less filename should parse");
+
+        assert_eq!(version, parsed_version(&["1"]));
+    }
+
+    #[test]
+    fn parses_large_rust_migration_version() {
+        let version =
+            parse_rust_migration_filename("V99999999999999999999999999999999999999__large.rs")
+                .expect("large version should parse");
+
+        assert_eq!(
+            version,
+            parsed_version(&["99999999999999999999999999999999999999"])
+        );
+    }
 }

@@ -1,0 +1,7 @@
+error: embed_migrations! path does not exist: $WORKSPACE/target/tests/trybuild/schemalane-macros/does-not-exist
+ --> tests/ui/missing_migrations_dir.rs:3:1
+  |
+3 | embed_migrations!("does-not-exist");
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = note: this error originates in the macro `embed_migrations` (in Nightly builds, run with -Z macro-backtrace for more info)

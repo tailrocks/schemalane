@@ -1,9 +1,14 @@
 [package]
 edition = "2024"
 name = "schemalane-core"
-publish = false
-rust-version = "1.93.0"
-version = "0.1.0"
+version = "0.1.20"
+description = "Core migration engine for Schemalane PostgreSQL-first, forward-only migrations"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/donbeave/schemalane"
+homepage = "https://github.com/donbeave/schemalane"
+documentation = "https://docs.rs/schemalane-core"
+readme = "../README.md"
+keywords = ["postgres", "migration", "database", "sql", "schemalane"]
 
 [lints]
 workspace = true
@@ -14,29 +19,16 @@ path = "src/lib.rs"
 
 [dependencies]
 crc32fast = "1.5.0"
-regex = "1.12.3"
-schemalane-macros = { path = "../schemalane-macros" }
+deadpool-postgres = "0.14.1"
+schemalane-macros = { version = "0.1.0", path = "../schemalane-macros" }
 serde = { version = "1.0.228", features = ["derive"] }
+pg_query = "6.1.1"
+pg_query_fmt = { version = "0.1.3", path = "../pg_query_fmt" }
 thiserror = "2.0.18"
-
-[dependencies.sea-orm]
-version = "2.0.0-rc.35"
-default-features = false
-features = [
-    "runtime-tokio-rustls",
-    "sqlx-postgres",
-    "with-chrono",
-]
-
-[dependencies.sea-orm-migration]
-version = "2.0.0-rc.35"
-default-features = false
-features = [
-    "runtime-tokio-rustls",
-    "sqlx-postgres",
-]
+tokio-postgres = "0.7.13"
 
 [dev-dependencies]
-tempfile = "3.26.0"
-testcontainers-modules = { version = "0.15.0", features = ["postgres", "blocking"] }
-tokio = { version = "1.49.0", features = ["rt-multi-thread"] }
+tempfile = "=3.27.0"
+testcontainers-modules = { version = "=0.15.0", default-features = false, features = ["postgres", "blocking", "aws-lc-rs"] }
+tokio = { version = "=1.52.3", features = ["rt-multi-thread"] }
+tokio-postgres = "=0.7.17"

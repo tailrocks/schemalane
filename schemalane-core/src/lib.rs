@@ -1,18 +1,20 @@
 use crc32fast::Hasher;
-use regex::Regex;
-use sea_orm::sqlx;
-use sea_orm::{
-    ConnectionTrait, DatabaseConnection, DbBackend, DbErr, Statement, TransactionTrait, Value,
-};
-use sea_orm_migration::SchemaManager;
+use deadpool_postgres::Pool;
+use pg_query::protobuf;
 use serde::Serialize;
 use std::collections::{BTreeSet, HashMap};
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 use std::time::Instant;
 use thiserror::Error;
+use tokio_postgres::types::ToSql;
+use tokio_postgres::{Client, Transaction};
+
+mod filename;
+
+use filename::{ParsedVersion, parse_rust_filename, parse_sql_filename};
 
 pub use schemalane_macros::embed_migrations;
 
@@ -45,10 +47,10 @@ pub enum SchemalaneError {
     Io(#[from] std::io::Error),
 
     #[error("Database error: {0}")]
-    Db(#[from] DbErr),
+    Db(#[from] tokio_postgres::Error),
 
-    #[error("Locking error: {0}")]
-    Lock(#[from] sqlx::Error),
+    #[error("Pool error: {0}")]
+    Pool(#[from] deadpool_postgres::PoolError),
 
     #[error("Validation error: {0}")]
     Validation(String),
@@ -63,17 +65,19 @@ pub enum SchemalaneError {
     MigrationExecution {
         script: String,
         #[source]
-        source: DbErr,
+        source: tokio_postgres::Error,
     },
 
-    #[error("`fresh` requires --yes confirmation")]
-    FreshRequiresYes,
+    #[error(
+        "Detected both transactional and non-transactional statements within the same migration {script} (line {line})"
+    )]
+    MixedStatements { script: String, line: u64 },
+
+    #[error("`fresh` requires --confirm yes")]
+    FreshRequiresConfirm,
 
     #[error("Pending migrations found ({0})")]
     PendingMigrations(usize),
-
-    #[error("Only PostgreSQL is supported in Schemalane v1")]
-    UnsupportedBackend,
 }
 
 impl SchemalaneError {
@@ -83,7 +87,8 @@ impl SchemalaneError {
             Self::Drift(_) => 3,
             Self::FailedHistory(_) => 4,
             Self::PendingMigrations(_) => 5,
-            Self::FreshRequiresYes => 6,
+            Self::FreshRequiresConfirm => 6,
+            Self::MixedStatements { .. } => 7,
             _ => 1,
         }
     }
@@ -153,6 +158,93 @@ pub struct InitReport {
     pub overwritten: Vec<PathBuf>,
 }
 
+#[derive(Debug, Clone)]
+pub struct MigrationInfo {
+    pub version: String,
+    pub description: String,
+    pub migration_type: String,
+    pub script: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct MigrationStarted {
+    pub migration: MigrationInfo,
+    pub index: usize,
+    pub total: usize,
+}
+
+#[derive(Debug, Clone)]
+pub struct MigrationFinished {
+    pub migration: MigrationInfo,
+    pub index: usize,
+    pub total: usize,
+    pub execution_time_ms: i32,
+}
+
+#[derive(Debug, Clone)]
+pub struct MigrationFailed {
+    pub migration: MigrationInfo,
+    pub index: usize,
+    pub total: usize,
+    pub execution_time_ms: i32,
+    pub error: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct SqlStatementStarted {
+    pub migration: MigrationInfo,
+    pub statement_index: usize,
+    pub total_statements: usize,
+    pub statement_preview: String,
+    pub statement: String,
+    /// Source line number in the migration file (1-based), or `None` if unavailable.
+    pub source_line: Option<u64>,
+}
+
+#[derive(Debug, Clone)]
+pub struct SqlStatementFinished {
+    pub migration: MigrationInfo,
+    pub statement_index: usize,
+    pub total_statements: usize,
+    pub statement_preview: String,
+    pub statement: String,
+    pub execution_time_ms: i32,
+    /// Source line number in the migration file (1-based), or `None` if unavailable.
+    pub source_line: Option<u64>,
+}
+
+#[derive(Debug, Clone)]
+pub struct SqlStatementFailed {
+    pub migration: MigrationInfo,
+    pub statement_index: usize,
+    pub total_statements: usize,
+    pub statement_preview: String,
+    pub statement: String,
+    pub execution_time_ms: i32,
+    pub error: String,
+    /// Source line number in the migration file (1-based), or `None` if unavailable.
+    pub source_line: Option<u64>,
+}
+
+pub trait MigrationObserver: Send + Sync {
+    fn on_migration_start(&self, _event: &MigrationStarted) {}
+
+    fn on_migration_finish(&self, _event: &MigrationFinished) {}
+
+    fn on_migration_failed(&self, _event: &MigrationFailed) {}
+
+    fn on_sql_statement_start(&self, _event: &SqlStatementStarted) {}
+
+    fn on_sql_statement_finish(&self, _event: &SqlStatementFinished) {}
+
+    fn on_sql_statement_failed(&self, _event: &SqlStatementFailed) {}
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct NoopMigrationObserver;
+
+impl MigrationObserver for NoopMigrationObserver {}
+
 pub fn init_migration_project(path: &Path, force: bool) -> Result<InitReport, SchemalaneError> {
     if path.exists() {
         if !path.is_dir() {
@@ -205,10 +297,10 @@ pub enum RustTransactionMode {
     Transaction,
 }
 
-pub type RustMigrationFuture<'a> = Pin<Box<dyn Future<Output = Result<(), DbErr>> + Send + 'a>>;
+pub type RustMigrationFuture<'a> =
+    Pin<Box<dyn Future<Output = Result<(), tokio_postgres::Error>> + Send + 'a>>;
 
-type DynRustMigrationFn =
-    dyn for<'a> Fn(&'a SchemaManager<'a>) -> RustMigrationFuture<'a> + Send + Sync;
+type DynRustMigrationFn = dyn for<'a> Fn(&'a Client) -> RustMigrationFuture<'a> + Send + Sync;
 
 #[derive(Clone)]
 pub struct RustMigrationExecutor {
@@ -219,21 +311,21 @@ pub struct RustMigrationExecutor {
 impl RustMigrationExecutor {
     pub fn new<F>(run: F) -> Self
     where
-        F: for<'a> Fn(&'a SchemaManager<'a>) -> RustMigrationFuture<'a> + Send + Sync + 'static,
+        F: for<'a> Fn(&'a Client) -> RustMigrationFuture<'a> + Send + Sync + 'static,
     {
         Self::with_mode(RustTransactionMode::NoTransaction, run)
     }
 
     pub fn transactional<F>(run: F) -> Self
     where
-        F: for<'a> Fn(&'a SchemaManager<'a>) -> RustMigrationFuture<'a> + Send + Sync + 'static,
+        F: for<'a> Fn(&'a Client) -> RustMigrationFuture<'a> + Send + Sync + 'static,
     {
         Self::with_mode(RustTransactionMode::Transaction, run)
     }
 
     pub fn with_mode<F>(transaction_mode: RustTransactionMode, run: F) -> Self
     where
-        F: for<'a> Fn(&'a SchemaManager<'a>) -> RustMigrationFuture<'a> + Send + Sync + 'static,
+        F: for<'a> Fn(&'a Client) -> RustMigrationFuture<'a> + Send + Sync + 'static,
     {
         Self {
             transaction_mode,
@@ -245,8 +337,8 @@ impl RustMigrationExecutor {
         self.transaction_mode
     }
 
-    async fn up(&self, manager: &SchemaManager<'_>) -> Result<(), DbErr> {
-        (self.run)(manager).await
+    async fn up(&self, client: &Client) -> Result<(), tokio_postgres::Error> {
+        (self.run)(client).await
     }
 }
 
@@ -296,32 +388,58 @@ impl SchemalaneMigrator {
         self
     }
 
-    pub async fn up(&self, db: &DatabaseConnection) -> Result<RunReport, SchemalaneError> {
-        Self::ensure_postgres(db)?;
+    pub async fn up(&self, pool: &Pool) -> Result<RunReport, SchemalaneError> {
+        self.up_with_observer(pool, &NoopMigrationObserver).await
+    }
+
+    pub async fn up_with_observer<O>(
+        &self,
+        pool: &Pool,
+        observer: &O,
+    ) -> Result<RunReport, SchemalaneError>
+    where
+        O: MigrationObserver + ?Sized,
+    {
         let migrations = self.discover_migrations()?;
         self.ensure_rust_executors_registered(&migrations)?;
-        self.with_advisory_lock(db, async {
-            self.ensure_history_table(db).await?;
-            let installed_by = self.resolve_installed_by(db).await?;
-            let mut history = self.load_history(db).await?;
+        self.with_advisory_lock(pool, async {
+            let client = pool.get().await?;
+            self.ensure_target_schema(&client).await?;
+            self.ensure_history_table(&client).await?;
+            let installed_by = self.resolve_installed_by(&client).await?;
+            let mut history = self.load_history(&client).await?;
             Self::ensure_no_blocking_history(&migrations, &history)?;
 
             let mut report = RunReport::default();
+            let total_to_apply = migrations
+                .iter()
+                .filter(|migration| !is_applied_success(migration, &history))
+                .count();
+            let mut applied_index = 0usize;
+
             for migration in &migrations {
                 if is_applied_success(migration, &history) {
                     report.skipped += 1;
                     continue;
                 }
 
+                applied_index += 1;
+                let migration_info = migration.info();
+                observer.on_migration_start(&MigrationStarted {
+                    migration: migration_info.clone(),
+                    index: applied_index,
+                    total: total_to_apply,
+                });
+
                 let started = Instant::now();
-                let run_result = self.apply_migration(db, migration).await;
+                let run_result = self.apply_migration(pool, migration, observer).await;
                 let execution_time_ms = millis_i32(started.elapsed().as_millis());
 
                 match run_result {
                     Ok(()) => {
                         let installed_rank = self
                             .insert_history_row(
-                                db,
+                                &client,
                                 migration,
                                 &installed_by,
                                 execution_time_ms,
@@ -341,19 +459,44 @@ impl SchemalaneMigrator {
                             script: migration.script.clone(),
                             execution_time_ms,
                         });
-                    }
-                    Err(source) => {
-                        self.insert_history_row(
-                            db,
-                            migration,
-                            &installed_by,
+
+                        observer.on_migration_finish(&MigrationFinished {
+                            migration: migration_info,
+                            index: applied_index,
+                            total: total_to_apply,
                             execution_time_ms,
-                            false,
-                        )
-                        .await?;
-                        return Err(SchemalaneError::MigrationExecution {
-                            script: migration.script.clone(),
-                            source,
+                        });
+                    }
+                    Err(err) => {
+                        let error_message = err.to_string();
+
+                        // MixedStatements is a validation error — do not record a
+                        // failed history row because the migration never executed.
+                        if !matches!(err, SchemalaneError::MixedStatements { .. }) {
+                            self.insert_history_row(
+                                &client,
+                                migration,
+                                &installed_by,
+                                execution_time_ms,
+                                false,
+                            )
+                            .await?;
+                        }
+
+                        observer.on_migration_failed(&MigrationFailed {
+                            migration: migration_info,
+                            index: applied_index,
+                            total: total_to_apply,
+                            execution_time_ms,
+                            error: error_message,
+                        });
+
+                        return Err(match err {
+                            SchemalaneError::Db(source) => SchemalaneError::MigrationExecution {
+                                script: migration.script.clone(),
+                                source,
+                            },
+                            other => other,
                         });
                     }
                 }
@@ -364,12 +507,12 @@ impl SchemalaneMigrator {
         .await
     }
 
-    pub async fn status(&self, db: &DatabaseConnection) -> Result<StatusReport, SchemalaneError> {
-        Self::ensure_postgres(db)?;
+    pub async fn status(&self, pool: &Pool) -> Result<StatusReport, SchemalaneError> {
+        let client = pool.get().await?;
         let migrations = self.discover_migrations()?;
 
-        let history = if self.history_table_exists(db).await? {
-            self.load_history(db).await?
+        let history = if self.history_table_exists(&client).await? {
+            self.load_history(&client).await?
         } else {
             Vec::new()
         };
@@ -382,35 +525,54 @@ impl SchemalaneMigrator {
         ))
     }
 
-    pub async fn fresh(
+    pub async fn fresh(&self, pool: &Pool, confirmed: bool) -> Result<RunReport, SchemalaneError> {
+        self.fresh_with_observer(pool, confirmed, &NoopMigrationObserver)
+            .await
+    }
+
+    pub async fn fresh_with_observer<O>(
         &self,
-        db: &DatabaseConnection,
+        pool: &Pool,
         confirmed: bool,
-    ) -> Result<RunReport, SchemalaneError> {
+        observer: &O,
+    ) -> Result<RunReport, SchemalaneError>
+    where
+        O: MigrationObserver + ?Sized,
+    {
         if !confirmed {
-            return Err(SchemalaneError::FreshRequiresYes);
+            return Err(SchemalaneError::FreshRequiresConfirm);
         }
 
-        Self::ensure_postgres(db)?;
         let migrations = self.discover_migrations()?;
         self.ensure_rust_executors_registered(&migrations)?;
 
-        self.with_advisory_lock(db, async {
-            self.drop_all_tables(db).await?;
-            self.ensure_history_table(db).await?;
+        self.with_advisory_lock(pool, async {
+            let client = pool.get().await?;
+            let schemas = Self::list_user_schemas(&client).await?;
+            Self::drop_schemas(&client, &schemas).await?;
+            self.ensure_target_schema(&client).await?;
+            self.ensure_history_table(&client).await?;
 
-            let installed_by = self.resolve_installed_by(db).await?;
+            let installed_by = self.resolve_installed_by(&client).await?;
             let mut report = RunReport::default();
+            let total_to_apply = migrations.len();
 
-            for migration in &migrations {
+            for (index, migration) in migrations.iter().enumerate() {
+                let migration_info = migration.info();
+                observer.on_migration_start(&MigrationStarted {
+                    migration: migration_info.clone(),
+                    index: index + 1,
+                    total: total_to_apply,
+                });
+
                 let started = Instant::now();
-                let run_result = self.apply_migration(db, migration).await;
+                let run_result = self.apply_migration(pool, migration, observer).await;
                 let execution_time_ms = millis_i32(started.elapsed().as_millis());
 
                 match run_result {
                     Ok(()) => {
                         self.insert_history_row(
-                            db,
+                            &client,
                             migration,
                             &installed_by,
                             execution_time_ms,
@@ -424,19 +586,42 @@ impl SchemalaneMigrator {
                             script: migration.script.clone(),
                             execution_time_ms,
                         });
-                    }
-                    Err(source) => {
-                        self.insert_history_row(
-                            db,
-                            migration,
-                            &installed_by,
+
+                        observer.on_migration_finish(&MigrationFinished {
+                            migration: migration_info,
+                            index: index + 1,
+                            total: total_to_apply,
                             execution_time_ms,
-                            false,
-                        )
-                        .await?;
-                        return Err(SchemalaneError::MigrationExecution {
-                            script: migration.script.clone(),
-                            source,
+                        });
+                    }
+                    Err(err) => {
+                        let error_message = err.to_string();
+
+                        if !matches!(err, SchemalaneError::MixedStatements { .. }) {
+                            self.insert_history_row(
+                                &client,
+                                migration,
+                                &installed_by,
+                                execution_time_ms,
+                                false,
+                            )
+                            .await?;
+                        }
+
+                        observer.on_migration_failed(&MigrationFailed {
+                            migration: migration_info,
+                            index: index + 1,
+                            total: total_to_apply,
+                            execution_time_ms,
+                            error: error_message,
+                        });
+
+                        return Err(match err {
+                            SchemalaneError::Db(source) => SchemalaneError::MigrationExecution {
+                                script: migration.script.clone(),
+                                source,
+                            },
+                            other => other,
                         });
                     }
                 }
@@ -447,42 +632,34 @@ impl SchemalaneMigrator {
         .await
     }
 
-    async fn with_advisory_lock<T, F>(
-        &self,
-        db: &DatabaseConnection,
-        fut: F,
-    ) -> Result<T, SchemalaneError>
+    async fn with_advisory_lock<T, F>(&self, pool: &Pool, fut: F) -> Result<T, SchemalaneError>
     where
         F: Future<Output = Result<T, SchemalaneError>>,
     {
-        let pool = db.get_postgres_connection_pool();
-        let mut lock_conn = pool.acquire().await?;
+        let lock_client = pool.get().await?;
 
-        sqlx::query("SELECT pg_advisory_lock($1)")
-            .bind(self.config.advisory_lock_id)
-            .execute(&mut *lock_conn)
+        lock_client
+            .execute(
+                "SELECT pg_advisory_lock($1)",
+                &[&self.config.advisory_lock_id],
+            )
             .await?;
 
         let operation_result = fut.await;
 
-        let unlock_result = sqlx::query("SELECT pg_advisory_unlock($1)")
-            .bind(self.config.advisory_lock_id)
-            .execute(&mut *lock_conn)
+        let unlock_result = lock_client
+            .execute(
+                "SELECT pg_advisory_unlock($1)",
+                &[&self.config.advisory_lock_id],
+            )
             .await;
 
         match (operation_result, unlock_result) {
             (Ok(value), Ok(_)) => Ok(value),
             (Err(err), Ok(_)) => Err(err),
-            (Ok(_), Err(err)) => Err(SchemalaneError::Lock(err)),
+            (Ok(_), Err(err)) => Err(SchemalaneError::Db(err)),
             (Err(err), Err(_unlock_err)) => Err(err),
         }
-    }
-
-    fn ensure_postgres(db: &DatabaseConnection) -> Result<(), SchemalaneError> {
-        if db.get_database_backend() != DbBackend::Postgres {
-            return Err(SchemalaneError::UnsupportedBackend);
-        }
-        Ok(())
     }
 
     fn discover_migrations(&self) -> Result<Vec<DiscoveredMigration>, SchemalaneError> {
@@ -531,7 +708,11 @@ impl SchemalaneMigrator {
                 continue;
             }
 
-            if path.extension().and_then(|ext| ext.to_str()) != Some("sql") {
+            if !path
+                .extension()
+                .and_then(|ext| ext.to_str())
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("sql"))
+            {
                 continue;
             }
 
@@ -541,7 +722,7 @@ impl SchemalaneMigrator {
 
             let (version_text, parsed_version, description) = parse_sql_filename(file_name)?;
             let content = std::fs::read(&path)?;
-            let checksum = Some(calculate_checksum(&content));
+            let checksum = Some(calculate_checksum(file_name, &content)?);
             let description_display = description.replace('_', " ");
 
             migrations.push(DiscoveredMigration {
@@ -568,7 +749,11 @@ impl SchemalaneMigrator {
                 continue;
             }
 
-            if path.extension().and_then(|ext| ext.to_str()) != Some("rs") {
+            if !path
+                .extension()
+                .and_then(|ext| ext.to_str())
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("rs"))
+            {
                 continue;
             }
 
@@ -578,7 +763,7 @@ impl SchemalaneMigrator {
 
             let (version_text, parsed_version, description) = parse_rust_filename(file_name)?;
             let content = std::fs::read(&path)?;
-            let checksum = Some(calculate_checksum(&content));
+            let checksum = Some(calculate_checksum(file_name, &content)?);
             let description_display = description.replace('_', " ");
 
             migrations.push(DiscoveredMigration {
@@ -643,7 +828,8 @@ impl SchemalaneMigrator {
 
         for migration in migrations {
             if let Some(row) = latest.get(migration.script.as_str())
-                && row.success && row.checksum != migration.checksum
+                && row.success
+                && row.checksum != migration.checksum
             {
                 checksum_mismatch.push(migration.script.clone());
             }
@@ -656,61 +842,99 @@ impl SchemalaneMigrator {
 
         let mut drift_items = Vec::new();
         if !missing.is_empty() {
-            missing.sort();
-            drift_items.push(format!("missing: {}", missing.join(", ")));
+            drift_items.push(format!(
+                "{} missing migration(s) in local crate",
+                missing.len()
+            ));
         }
         if !checksum_mismatch.is_empty() {
-            checksum_mismatch.sort();
-            drift_items.push(format!(
-                "checksum mismatch: {}",
-                checksum_mismatch.join(", ")
-            ));
+            drift_items.push(format!("{} checksum mismatch(es)", checksum_mismatch.len()));
         }
 
         if !drift_items.is_empty() {
-            return Err(SchemalaneError::Drift(drift_items.join("; ")));
+            return Err(SchemalaneError::Drift(drift_items.join(", ")));
         }
 
         Ok(())
     }
 
-    async fn apply_migration(
+    async fn apply_migration<O>(
         &self,
-        db: &DatabaseConnection,
+        pool: &Pool,
         migration: &DiscoveredMigration,
-    ) -> Result<(), DbErr> {
+        observer: &O,
+    ) -> Result<(), SchemalaneError>
+    where
+        O: MigrationObserver + ?Sized,
+    {
+        let migration_info = migration.info();
+
         match &migration.source {
             MigrationSource::SqlFile(path) => {
                 let sql = std::fs::read_to_string(path).map_err(|err| {
-                    DbErr::Custom(format!(
+                    SchemalaneError::Validation(format!(
                         "failed to read SQL migration {}: {err}",
                         path.display()
                     ))
                 })?;
-                let manager = SchemaManager::new(db);
-                execute_sql_migration(&manager, &sql).await
+                let mut client = pool.get().await?;
+                self.set_search_path(&client).await?;
+                execute_sql_migration(&mut client, &sql, &migration_info, observer).await
             }
             MigrationSource::RustFile(path) => {
                 let executor = self
                     .rust_migrations
                     .get(migration.script.as_str())
                     .ok_or_else(|| {
-                        DbErr::Custom(format!(
+                        SchemalaneError::Validation(format!(
                             "missing Rust migration executor for script {} ({})",
                             migration.script,
                             path.display()
                         ))
                     })?;
-                let manager = SchemaManager::new(db);
-                execute_rust_migration(&manager, executor).await
+                let mut client = pool.get().await?;
+                self.set_search_path(&client).await?;
+                execute_rust_migration(&mut client, executor)
+                    .await
+                    .map_err(SchemalaneError::Db)
             }
         }
     }
 
-    async fn ensure_history_table(&self, db: &DatabaseConnection) -> Result<(), DbErr> {
+    /// Create the configured schema if it does not already exist. Mirrors
+    /// Flyway's behavior with `-schemas=<name>`, which auto-creates the schema.
+    async fn ensure_target_schema(&self, client: &Client) -> Result<(), SchemalaneError> {
+        let sql = format!(
+            "CREATE SCHEMA IF NOT EXISTS {}",
+            quote_ident(&self.config.schema)
+        );
+        client.batch_execute(&sql).await?;
+        Ok(())
+    }
+
+    /// Prepend the configured schema to the connection's existing `search_path`
+    /// so unqualified DDL in user migrations lands there. Matches Flyway's
+    /// `PostgreSQLConnection.doChangeCurrentSchemaOrSearchPathTo`, which uses
+    /// `set_config('search_path', '<schema>,<original>', false)` rather than
+    /// replacing the path outright. Replacing it would strip `public` (and any
+    /// caller-configured paths), which silently hides extensions installed
+    /// there — e.g. `citext` referenced as an unqualified type by tokio-postgres
+    /// when binding parameters of `public.citext` columns.
+    async fn set_search_path(&self, client: &Client) -> Result<(), SchemalaneError> {
+        let original: String = client
+            .query_one("SELECT current_setting('search_path') AS path", &[])
+            .await?
+            .get("path");
+        let new_path = format!("{}, {}", quote_ident(&self.config.schema), original);
+        client
+            .execute("SELECT set_config('search_path', $1, false)", &[&new_path])
+            .await?;
+        Ok(())
+    }
+
+    async fn ensure_history_table(&self, client: &Client) -> Result<(), SchemalaneError> {
         let table = qualified_table(&self.config.schema, &self.config.history_table);
         let success_idx = quote_ident(&format!("{}_s_idx", self.config.history_table));
-        let version_idx = quote_ident(&format!("{}_v_idx", self.config.history_table));
 
         let ddl = format!(
             "\
@@ -722,143 +946,140 @@ CREATE TABLE IF NOT EXISTS {table} (\
 \"script\" VARCHAR(1000) NOT NULL,\
 \"checksum\" INTEGER,\
 \"installed_by\" VARCHAR(100) NOT NULL,\
-\"installed_on\" TIMESTAMPTZ NOT NULL DEFAULT now(),\
+\"installed_on\" TIMESTAMP NOT NULL DEFAULT now(),\
 \"execution_time\" INTEGER NOT NULL,\
 \"success\" BOOLEAN NOT NULL,\
 CONSTRAINT {pk} PRIMARY KEY (\"installed_rank\")\
 );\
-CREATE INDEX IF NOT EXISTS {success_idx} ON {table} (\"success\");\
-CREATE INDEX IF NOT EXISTS {version_idx} ON {table} (\"version\");",
+CREATE INDEX IF NOT EXISTS {success_idx} ON {table} (\"success\");",
             pk = quote_ident(&format!("{}_pk", self.config.history_table)),
         );
 
-        db.execute_unprepared(&ddl).await?;
+        client.batch_execute(&ddl).await?;
         Ok(())
     }
 
-    async fn history_table_exists(&self, db: &DatabaseConnection) -> Result<bool, DbErr> {
+    async fn history_table_exists(&self, client: &Client) -> Result<bool, SchemalaneError> {
         let regclass = format!("{}.{}", self.config.schema, self.config.history_table);
-        let stmt = Statement::from_sql_and_values(
-            DbBackend::Postgres,
-            "SELECT to_regclass($1) IS NOT NULL AS exists",
-            [regclass.into()],
-        );
+        let row = client
+            .query_one("SELECT to_regclass($1) IS NOT NULL AS exists", &[&regclass])
+            .await?;
 
-        let row = db.query_one_raw(stmt).await?.ok_or_else(|| {
-            DbErr::Custom("failed to evaluate history table existence".to_owned())
-        })?;
-
-        row.try_get("", "exists")
+        let exists: bool = row.get("exists");
+        Ok(exists)
     }
 
-    async fn load_history(&self, db: &DatabaseConnection) -> Result<Vec<HistoryRow>, DbErr> {
+    async fn load_history(&self, client: &Client) -> Result<Vec<HistoryRow>, SchemalaneError> {
         let table = qualified_table(&self.config.schema, &self.config.history_table);
         let query = format!(
             "SELECT \"installed_rank\", \"version\", \"description\", \"type\", \"script\", \"checksum\", \"installed_by\", \"installed_on\"::text AS \"installed_on\", \"execution_time\", \"success\" FROM {table} ORDER BY \"installed_rank\" ASC"
         );
 
-        let stmt = Statement::from_string(DbBackend::Postgres, query);
-        let rows = db.query_all_raw(stmt).await?;
+        let rows = client.query(&query, &[]).await?;
 
-        rows.into_iter()
-            .map(|row| {
-                Ok(HistoryRow {
-                    installed_rank: row.try_get("", "installed_rank")?,
-                    version: row.try_get("", "version")?,
-                    description: row.try_get("", "description")?,
-                    migration_type: row.try_get("", "type")?,
-                    script: row.try_get("", "script")?,
-                    checksum: row.try_get("", "checksum")?,
-                    installed_on: row.try_get("", "installed_on")?,
-                    execution_time: row.try_get("", "execution_time")?,
-                    success: row.try_get("", "success")?,
-                })
-            })
-            .collect()
+        let mut history = Vec::with_capacity(rows.len());
+        for row in rows {
+            history.push(HistoryRow {
+                installed_rank: row.get("installed_rank"),
+                version: row.get("version"),
+                description: row.get("description"),
+                migration_type: row.get("type"),
+                script: row.get("script"),
+                checksum: row.get("checksum"),
+                installed_on: row.get("installed_on"),
+                execution_time: row.get("execution_time"),
+                success: row.get("success"),
+            });
+        }
+
+        Ok(history)
     }
 
-    async fn resolve_installed_by(&self, db: &DatabaseConnection) -> Result<String, DbErr> {
+    async fn resolve_installed_by(&self, client: &Client) -> Result<String, SchemalaneError> {
         if let Some(installed_by) = &self.config.installed_by {
             return Ok(installed_by.clone());
         }
 
-        let stmt = Statement::from_string(
-            DbBackend::Postgres,
-            "SELECT current_user AS current_user".to_owned(),
-        );
-        let row = db
-            .query_one_raw(stmt)
-            .await?
-            .ok_or_else(|| DbErr::Custom("could not resolve current_user".to_owned()))?;
-
-        row.try_get("", "current_user")
+        let row = client
+            .query_one("SELECT current_user AS current_user", &[])
+            .await?;
+        let current_user: String = row.get("current_user");
+        Ok(current_user)
     }
 
-    async fn next_installed_rank(&self, db: &DatabaseConnection) -> Result<i32, DbErr> {
+    async fn next_installed_rank(&self, client: &Client) -> Result<i32, SchemalaneError> {
         let table = qualified_table(&self.config.schema, &self.config.history_table);
-        let stmt = Statement::from_string(
-            DbBackend::Postgres,
-            format!("SELECT COALESCE(MAX(\"installed_rank\"), 0) + 1 AS next_rank FROM {table}"),
-        );
+        let query =
+            format!("SELECT COALESCE(MAX(\"installed_rank\"), 0) + 1 AS next_rank FROM {table}");
 
-        let row = db
-            .query_one_raw(stmt)
-            .await?
-            .ok_or_else(|| DbErr::Custom("failed to compute next installed_rank".to_owned()))?;
-
-        row.try_get("", "next_rank")
+        let row = client.query_one(&query, &[]).await?;
+        let next_rank: i32 = row.get("next_rank");
+        Ok(next_rank)
     }
 
     async fn insert_history_row(
         &self,
-        db: &DatabaseConnection,
+        client: &Client,
         migration: &DiscoveredMigration,
         installed_by: &str,
         execution_time: i32,
         success: bool,
-    ) -> Result<i32, DbErr> {
-        let installed_rank = self.next_installed_rank(db).await?;
+    ) -> Result<i32, SchemalaneError> {
+        let installed_rank = self.next_installed_rank(client).await?;
         let table = qualified_table(&self.config.schema, &self.config.history_table);
 
         let sql = format!(
             "INSERT INTO {table} (\"installed_rank\", \"version\", \"description\", \"type\", \"script\", \"checksum\", \"installed_by\", \"execution_time\", \"success\") VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)"
         );
 
-        let values = vec![
-            Value::from(installed_rank),
-            Value::from(Some(migration.version_text.clone())),
-            Value::from(migration.description_display.clone()),
-            Value::from(migration.migration_type.as_history_type().to_owned()),
-            Value::from(migration.script.clone()),
-            Value::from(migration.checksum),
-            Value::from(installed_by.to_owned()),
-            Value::from(execution_time),
-            Value::from(success),
+        let version: Option<&str> = Some(migration.version_text.as_str());
+        let migration_type = migration.migration_type.as_history_type();
+        let params: Vec<&(dyn ToSql + Sync)> = vec![
+            &installed_rank,
+            &version,
+            &migration.description_display,
+            &migration_type,
+            &migration.script,
+            &migration.checksum,
+            &installed_by,
+            &execution_time,
+            &success,
         ];
 
-        let stmt = Statement::from_sql_and_values(DbBackend::Postgres, sql, values);
-        db.execute_raw(stmt).await?;
+        client.execute(&sql, &params).await?;
         Ok(installed_rank)
     }
 
-    async fn drop_all_tables(&self, db: &DatabaseConnection) -> Result<(), DbErr> {
-        let stmt = Statement::from_sql_and_values(
-            DbBackend::Postgres,
-            "SELECT tablename FROM pg_catalog.pg_tables WHERE schemaname = $1 ORDER BY tablename",
-            [self.config.schema.clone().into()],
-        );
+    /// List all user-created schemas in the database (excludes system schemas).
+    /// The `public` schema is always returned last.
+    pub async fn list_user_schemas(client: &Client) -> Result<Vec<String>, SchemalaneError> {
+        let rows = client
+            .query(
+                "SELECT nspname FROM pg_catalog.pg_namespace \
+                 WHERE nspname NOT LIKE 'pg_%' \
+                   AND nspname != 'information_schema' \
+                 ORDER BY CASE WHEN nspname = 'public' THEN 1 ELSE 0 END, nspname",
+                &[],
+            )
+            .await?;
 
-        let rows = db.query_all_raw(stmt).await?;
+        let mut schemas = Vec::with_capacity(rows.len());
         for row in rows {
-            let table_name: String = row.try_get("", "tablename")?;
-            let sql = format!(
-                "DROP TABLE IF EXISTS {}.{} CASCADE",
-                quote_ident(&self.config.schema),
-                quote_ident(&table_name)
-            );
-            db.execute_unprepared(&sql).await?;
+            let name: String = row.get("nspname");
+            schemas.push(name);
         }
+        Ok(schemas)
+    }
 
+    /// Drop the given schemas with CASCADE and re-create the `public` schema.
+    pub async fn drop_schemas(client: &Client, schemas: &[String]) -> Result<(), SchemalaneError> {
+        for schema in schemas {
+            let sql = format!("DROP SCHEMA IF EXISTS {} CASCADE", quote_ident(schema));
+            client.batch_execute(&sql).await?;
+        }
+        client
+            .batch_execute("CREATE SCHEMA IF NOT EXISTS public")
+            .await?;
         Ok(())
     }
 }
@@ -977,34 +1198,343 @@ fn build_status_report(
     }
 }
 
-async fn execute_sql_migration(manager: &SchemaManager<'_>, sql: &str) -> Result<(), DbErr> {
-    let db = manager.get_connection();
-    let txn = db.begin().await?;
+/// Transaction mode resolved for a SQL migration file by analysing its statements.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SqlTransactionMode {
+    /// All statements are safe to run inside a transaction.
+    Transactional,
+    /// All statements must run **outside** a transaction (e.g. `CREATE INDEX CONCURRENTLY`).
+    NonTransactional,
+}
 
-    match txn.execute_unprepared(sql).await {
-        Ok(_) => txn.commit().await,
+/// A parsed SQL statement from a migration file, produced by the `PostgreSQL` parser via
+/// `pg_query`.
+struct ParsedSqlStatement {
+    /// The raw SQL text to execute.
+    sql: String,
+    /// Source line number in the migration file (1-based).
+    source_line: u64,
+    /// A compact human-readable preview for observer events.
+    preview: String,
+    /// The protobuf parse node (used for AST-based non-transactional detection).
+    node: Option<protobuf::Node>,
+}
+
+/// Parses a SQL migration file into a list of [`ParsedSqlStatement`]s using the real
+/// `PostgreSQL` parser via `pg_query`.
+fn parse_sql_migration(sql: &str) -> Result<Vec<ParsedSqlStatement>, SchemalaneError> {
+    let stmts = pg_query::split_with_parser(sql).map_err(|err| {
+        SchemalaneError::Validation(format!("failed to split SQL migration: {err}"))
+    })?;
+
+    let mut result = Vec::with_capacity(stmts.len());
+
+    for stmt_sql in stmts {
+        let trimmed = stmt_sql.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+
+        let parsed = pg_query::parse(trimmed).map_err(|err| {
+            SchemalaneError::Validation(format!("failed to parse SQL statement: {err}"))
+        })?;
+
+        let source_line = offset_to_line(sql, stmt_sql);
+        let preview = pg_query_fmt::preview::statement_preview(&parsed);
+        let node = parsed
+            .protobuf
+            .stmts
+            .into_iter()
+            .next()
+            .and_then(|raw_stmt| raw_stmt.stmt.map(|n| *n));
+
+        result.push(ParsedSqlStatement {
+            sql: trimmed.to_owned(),
+            source_line,
+            preview,
+            node,
+        });
+    }
+
+    Ok(result)
+}
+
+/// Converts a character offset within the full SQL text to a 1-based line number.
+fn offset_to_line(full_sql: &str, stmt_slice: &str) -> u64 {
+    let offset = stmt_slice.as_ptr() as usize - full_sql.as_ptr() as usize;
+    let prefix = &full_sql[..offset.min(full_sql.len())];
+    (prefix.chars().filter(|&c| c == '\n').count() + 1) as u64
+}
+
+/// Determines whether a parsed SQL statement cannot execute inside a `PostgreSQL` transaction
+/// block.
+///
+/// Uses the protobuf AST node from `pg_query` (the real `PostgreSQL` parser) for detection.
+/// This mirrors Flyway's `PostgreSQLParser.detectCanExecuteInTransaction()`.
+fn is_non_transactional(stmt: &ParsedSqlStatement) -> bool {
+    use protobuf::node::Node;
+
+    let Some(ref node) = stmt.node else {
+        return false;
+    };
+    let Some(ref node_inner) = node.node else {
+        return false;
+    };
+
+    match node_inner {
+        // CREATE [UNIQUE] INDEX CONCURRENTLY
+        Node::IndexStmt(idx) => idx.concurrent,
+
+        // DROP INDEX CONCURRENTLY (generic DropStmt with concurrent flag)
+        Node::DropStmt(drop) => drop.concurrent,
+
+        // VACUUM is non-transactional, but standalone ANALYZE (also a VacuumStmt
+        // with is_vacuumcmd=false) CAN run inside a transaction.
+        Node::VacuumStmt(v) => v.is_vacuumcmd,
+
+        // REINDEX SCHEMA / DATABASE / SYSTEM are non-transactional.
+        // REINDEX TABLE / INDEX can run inside a transaction (Flyway: ^REINDEX (SCHEMA|DATABASE|SYSTEM)).
+        Node::ReindexStmt(r) => {
+            let kind = r.kind;
+            kind == protobuf::ReindexObjectType::ReindexObjectSchema as i32
+                || kind == protobuf::ReindexObjectType::ReindexObjectDatabase as i32
+                || kind == protobuf::ReindexObjectType::ReindexObjectSystem as i32
+        }
+
+        // Only DISCARD ALL is non-transactional (Flyway: ^DISCARD ALL).
+        // DISCARD PLANS / SEQUENCES / TEMP can run inside a transaction.
+        Node::DiscardStmt(d) => d.target == protobuf::DiscardMode::DiscardAll as i32,
+
+        // Always non-transactional statements
+        Node::AlterSystemStmt(_)
+        | Node::CreatedbStmt(_)
+        | Node::CreateTableSpaceStmt(_)
+        | Node::CreateSubscriptionStmt(_)
+        | Node::DropdbStmt(_)
+        | Node::DropTableSpaceStmt(_)
+        | Node::DropSubscriptionStmt(_) => true,
+
+        _ => false,
+    }
+}
+
+/// Determines the transaction mode for a SQL migration by examining its parsed statements.
+///
+/// If **all** statements are transactional -> `Transactional`.
+/// If **all** statements are non-transactional -> `NonTransactional`.
+/// If the file **mixes** both kinds -> returns an `Err` with the first offending line.
+///
+/// This replicates Flyway's default behaviour (`mixed = false`).
+fn resolve_sql_transaction_mode(
+    statements: &[ParsedSqlStatement],
+    script: &str,
+) -> Result<SqlTransactionMode, SchemalaneError> {
+    let mut has_transactional = false;
+    let mut has_non_transactional = false;
+    let mut first_non_transactional_line: Option<u64> = None;
+    let mut first_transactional_line: Option<u64> = None;
+
+    for stmt in statements {
+        let line = stmt.source_line;
+
+        if is_non_transactional(stmt) {
+            has_non_transactional = true;
+            if first_non_transactional_line.is_none() {
+                first_non_transactional_line = Some(line);
+            }
+        } else {
+            has_transactional = true;
+            if first_transactional_line.is_none() {
+                first_transactional_line = Some(line);
+            }
+        }
+    }
+
+    if has_transactional && has_non_transactional {
+        let offending_line = if first_transactional_line < first_non_transactional_line {
+            first_non_transactional_line.unwrap_or(1)
+        } else {
+            first_transactional_line.unwrap_or(1)
+        };
+        return Err(SchemalaneError::MixedStatements {
+            script: script.to_owned(),
+            line: offending_line,
+        });
+    }
+
+    if has_non_transactional {
+        Ok(SqlTransactionMode::NonTransactional)
+    } else {
+        Ok(SqlTransactionMode::Transactional)
+    }
+}
+
+async fn execute_sql_migration<O>(
+    client: &mut Client,
+    sql: &str,
+    migration: &MigrationInfo,
+    observer: &O,
+) -> Result<(), SchemalaneError>
+where
+    O: MigrationObserver + ?Sized,
+{
+    let statements = parse_sql_migration(sql)?;
+    let total_statements = statements.len();
+
+    let tx_mode = resolve_sql_transaction_mode(&statements, &migration.script)?;
+
+    match tx_mode {
+        SqlTransactionMode::Transactional => {
+            let txn = client.transaction().await?;
+            for (index, stmt) in statements.iter().enumerate() {
+                if let Err(err) =
+                    execute_statement_txn(&txn, stmt, index, total_statements, migration, observer)
+                        .await
+                {
+                    let _ = txn.rollback().await;
+                    return Err(SchemalaneError::Db(err));
+                }
+            }
+            txn.commit().await?;
+        }
+        SqlTransactionMode::NonTransactional => {
+            for (index, stmt) in statements.iter().enumerate() {
+                execute_statement_client(
+                    client,
+                    stmt,
+                    index,
+                    total_statements,
+                    migration,
+                    observer,
+                )
+                .await
+                .map_err(SchemalaneError::Db)?;
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Executes a single [`ParsedSqlStatement`] inside a transaction, emitting observer events.
+async fn execute_statement_txn<O>(
+    txn: &Transaction<'_>,
+    stmt: &ParsedSqlStatement,
+    index: usize,
+    total_statements: usize,
+    migration: &MigrationInfo,
+    observer: &O,
+) -> Result<(), tokio_postgres::Error>
+where
+    O: MigrationObserver + ?Sized,
+{
+    let source_line = Some(stmt.source_line);
+
+    observer.on_sql_statement_start(&SqlStatementStarted {
+        migration: migration.clone(),
+        statement_index: index + 1,
+        total_statements,
+        statement_preview: stmt.preview.clone(),
+        statement: stmt.sql.clone(),
+        source_line,
+    });
+
+    let started = Instant::now();
+    match txn.batch_execute(&stmt.sql).await {
+        Ok(()) => {
+            observer.on_sql_statement_finish(&SqlStatementFinished {
+                migration: migration.clone(),
+                statement_index: index + 1,
+                total_statements,
+                statement_preview: stmt.preview.clone(),
+                statement: stmt.sql.clone(),
+                execution_time_ms: millis_i32(started.elapsed().as_millis()),
+                source_line,
+            });
+            Ok(())
+        }
         Err(err) => {
-            let _ = txn.rollback().await;
+            observer.on_sql_statement_failed(&SqlStatementFailed {
+                migration: migration.clone(),
+                statement_index: index + 1,
+                total_statements,
+                statement_preview: stmt.preview.clone(),
+                statement: stmt.sql.clone(),
+                execution_time_ms: millis_i32(started.elapsed().as_millis()),
+                error: err.to_string(),
+                source_line,
+            });
+            Err(err)
+        }
+    }
+}
+
+/// Executes a single [`ParsedSqlStatement`] on a client (outside transaction), emitting
+/// observer events.
+async fn execute_statement_client<O>(
+    client: &Client,
+    stmt: &ParsedSqlStatement,
+    index: usize,
+    total_statements: usize,
+    migration: &MigrationInfo,
+    observer: &O,
+) -> Result<(), tokio_postgres::Error>
+where
+    O: MigrationObserver + ?Sized,
+{
+    let source_line = Some(stmt.source_line);
+
+    observer.on_sql_statement_start(&SqlStatementStarted {
+        migration: migration.clone(),
+        statement_index: index + 1,
+        total_statements,
+        statement_preview: stmt.preview.clone(),
+        statement: stmt.sql.clone(),
+        source_line,
+    });
+
+    let started = Instant::now();
+    match client.batch_execute(&stmt.sql).await {
+        Ok(()) => {
+            observer.on_sql_statement_finish(&SqlStatementFinished {
+                migration: migration.clone(),
+                statement_index: index + 1,
+                total_statements,
+                statement_preview: stmt.preview.clone(),
+                statement: stmt.sql.clone(),
+                execution_time_ms: millis_i32(started.elapsed().as_millis()),
+                source_line,
+            });
+            Ok(())
+        }
+        Err(err) => {
+            observer.on_sql_statement_failed(&SqlStatementFailed {
+                migration: migration.clone(),
+                statement_index: index + 1,
+                total_statements,
+                statement_preview: stmt.preview.clone(),
+                statement: stmt.sql.clone(),
+                execution_time_ms: millis_i32(started.elapsed().as_millis()),
+                error: err.to_string(),
+                source_line,
+            });
             Err(err)
         }
     }
 }
 
 async fn execute_rust_migration(
-    manager: &SchemaManager<'_>,
+    client: &mut Client,
     migration: &RustMigrationExecutor,
-) -> Result<(), DbErr> {
+) -> Result<(), tokio_postgres::Error> {
     match migration.transaction_mode() {
-        RustTransactionMode::NoTransaction => migration.up(manager).await,
+        RustTransactionMode::NoTransaction => migration.up(client).await,
         RustTransactionMode::Transaction => {
-            let db = manager.get_connection();
-            let txn = db.begin().await?;
-            let txn_manager = SchemaManager::new(&txn);
-
-            match migration.up(&txn_manager).await {
-                Ok(()) => txn.commit().await,
+            client.batch_execute("BEGIN").await?;
+            match migration.up(client).await {
+                Ok(()) => client.batch_execute("COMMIT").await,
                 Err(err) => {
-                    let _ = txn.rollback().await;
+                    let _ = client.batch_execute("ROLLBACK").await;
                     Err(err)
                 }
             }
@@ -1026,88 +1556,6 @@ fn latest_history_by_script(history: &[HistoryRow]) -> HashMap<&str, &HistoryRow
     latest
 }
 
-fn parse_sql_filename(file_name: &str) -> Result<(String, ParsedVersion, String), SchemalaneError> {
-    let captures = sql_migration_regex().captures(file_name).ok_or_else(|| {
-        SchemalaneError::Validation(format!(
-            "invalid SQL migration filename '{file_name}': expected V<version>__<description>.sql"
-        ))
-    })?;
-
-    let version_text = captures
-        .name("version")
-        .ok_or_else(|| SchemalaneError::Validation("missing version capture".to_owned()))?
-        .as_str()
-        .to_owned();
-
-    let description = captures
-        .name("description")
-        .ok_or_else(|| SchemalaneError::Validation("missing description capture".to_owned()))?
-        .as_str()
-        .to_owned();
-
-    let parsed = ParsedVersion::parse(&version_text)?;
-    Ok((version_text, parsed, description))
-}
-
-fn parse_rust_filename(
-    file_name: &str,
-) -> Result<(String, ParsedVersion, String), SchemalaneError> {
-    let captures = rust_migration_regex().captures(file_name).ok_or_else(|| {
-        SchemalaneError::Validation(format!(
-            "invalid Rust migration filename '{file_name}': expected V<version>__<description>.rs"
-        ))
-    })?;
-
-    let version_text = captures
-        .name("version")
-        .ok_or_else(|| SchemalaneError::Validation("missing version capture".to_owned()))?
-        .as_str()
-        .to_owned();
-
-    let description = captures
-        .name("description")
-        .ok_or_else(|| SchemalaneError::Validation("missing description capture".to_owned()))?
-        .as_str()
-        .to_owned();
-
-    let parsed = ParsedVersion::parse(&version_text)?;
-    Ok((version_text, parsed, description))
-}
-
-fn validate_version(version: &str) -> Result<(), SchemalaneError> {
-    if version_regex().is_match(version) {
-        Ok(())
-    } else {
-        Err(SchemalaneError::Validation(format!(
-            "invalid version '{version}': expected ^[0-9]+([._][0-9]+)*$"
-        )))
-    }
-}
-
-#[expect(clippy::expect_used, reason = "regex is a compile-time constant")]
-fn sql_migration_regex() -> &'static Regex {
-    static REGEX: OnceLock<Regex> = OnceLock::new();
-    REGEX.get_or_init(|| {
-        Regex::new(r"^V(?P<version>[0-9]+(?:[._][0-9]+)*)__(?P<description>[a-z0-9_]+)\.sql$")
-            .expect("valid SQL migration regex")
-    })
-}
-
-#[expect(clippy::expect_used, reason = "regex is a compile-time constant")]
-fn rust_migration_regex() -> &'static Regex {
-    static REGEX: OnceLock<Regex> = OnceLock::new();
-    REGEX.get_or_init(|| {
-        Regex::new(r"^V(?P<version>[0-9]+(?:[._][0-9]+)*)__(?P<description>[a-z0-9_]+)\.rs$")
-            .expect("valid Rust migration regex")
-    })
-}
-
-#[expect(clippy::expect_used, reason = "regex is a compile-time constant")]
-fn version_regex() -> &'static Regex {
-    static REGEX: OnceLock<Regex> = OnceLock::new();
-    REGEX.get_or_init(|| Regex::new(r"^[0-9]+([._][0-9]+)*$").expect("valid version regex"))
-}
-
 fn quote_ident(name: &str) -> String {
     format!("\"{}\"", name.replace('"', "\"\""))
 }
@@ -1116,7 +1564,10 @@ fn qualified_table(schema: &str, table: &str) -> String {
     format!("{}.{}", quote_ident(schema), quote_ident(table))
 }
 
-#[expect(clippy::cast_possible_truncation, reason = "guarded by the preceding bounds check")]
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "guarded by the preceding bounds check"
+)]
 const fn millis_i32(millis: u128) -> i32 {
     if millis > i32::MAX as u128 {
         i32::MAX
@@ -1125,10 +1576,30 @@ const fn millis_i32(millis: u128) -> i32 {
     }
 }
 
-fn calculate_checksum(bytes: &[u8]) -> i32 {
+/// Flyway-compatible checksum: CRC-32 over each line's UTF-8 bytes, with
+/// line terminators excluded. Matches `org.flywaydb.core.internal.util.ChecksumCalculator`,
+/// which reads via `BufferedReader.readLine()` (splits on `\n`, `\r\n`, or `\r`).
+///
+/// Errors if the content is not valid UTF-8 — Flyway uses a UTF-8 `BufferedReader`
+/// by default and surfaces `MalformedInputException` rather than silently
+/// hashing a substituted value. Hashing zero bytes (i.e. checksum `0`) for an
+/// invalid file would silently misclassify drift state for every subsequent
+/// `status` / `up` run.
+fn calculate_checksum(script: &str, bytes: &[u8]) -> Result<i32, SchemalaneError> {
+    let text = std::str::from_utf8(bytes).map_err(|err| {
+        SchemalaneError::Validation(format!(
+            "migration {script}: content is not valid UTF-8 (invalid byte at offset {}): {err}",
+            err.valid_up_to()
+        ))
+    })?;
     let mut hasher = Hasher::new();
-    hasher.update(bytes);
-    i32::from_be_bytes(hasher.finalize().to_be_bytes())
+    // `str::lines()` matches BufferedReader.readLine() for files that don't
+    // contain lone `\r` characters: splits on `\n` or `\r\n`, excludes the
+    // terminator, no trailing empty line for files that end with a newline.
+    for line in text.lines() {
+        hasher.update(line.as_bytes());
+    }
+    Ok(i32::from_be_bytes(hasher.finalize().to_be_bytes()))
 }
 
 fn write_init_file(
@@ -1234,30 +1705,17 @@ edition = "2024"
 publish = false
 
 [dependencies]
-schemalane-core = "0.1"
-schemalane-cli = "0.1"
+schemalane-core = { version = "0.1", registry = "kellnr" }
+schemalane-cli = { version = "0.1", registry = "kellnr" }
 tokio = { version = "1.48.0", features = ["macros", "rt-multi-thread"] }
 
-# If schemalane-core is not published yet, replace the line above with:
+# Expected local/private registry name in ~/.cargo/config.toml:
+# [registries.kellnr]
+# index = "sparse+http://localhost:8000/api/v1/crates/"
+#
+# If schemalane crates are not published yet, replace the lines above with:
 # schemalane-core = { path = "../schemalane-core" }
 # schemalane-cli = { path = "../schemalane-cli" }
-
-[dependencies.sea-orm]
-version = "2.0.0-rc.34"
-default-features = false
-features = [
-    "runtime-tokio-rustls",
-    "sqlx-postgres",
-    "with-chrono",
-]
-
-[dependencies.sea-orm-migration]
-version = "2.0.0-rc.34"
-default-features = false
-features = [
-    "runtime-tokio-rustls",
-    "sqlx-postgres",
-]
 "#;
 
 const INIT_PROJECT_README_TEMPLATE: &str = r#"# Migration Crate
@@ -1278,7 +1736,7 @@ Run from this crate:
 cargo run -- --database-url "$DATABASE_URL" up
 ```
 
-Run from parent project (SeaORM-style):
+Run from parent project:
 
 ```sh
 cargo run --manifest-path ./migration/Cargo.toml -- --database-url "$DATABASE_URL" up
@@ -1308,22 +1766,20 @@ const INIT_SQL_MIGRATION_TEMPLATE: &str = r"CREATE TABLE cake (
 );
 ";
 
-const INIT_RUST_MIGRATION_TEMPLATE: &str = r##"use sea_orm::{ConnectionTrait, DbErr};
-use sea_orm_migration::SchemaManager;
+const INIT_RUST_MIGRATION_TEMPLATE: &str = r#"use tokio_postgres::Client;
 
-pub async fn migration(manager: &SchemaManager<'_>) -> Result<(), DbErr> {
-    manager
-        .get_connection()
-        .execute_unprepared(
-            r#"
+pub async fn migration(client: &Client) -> Result<(), tokio_postgres::Error> {
+    client
+        .batch_execute(
+            r"
 INSERT INTO cake(name) VALUES ('vanilla');
 INSERT INTO cake(name) VALUES ('chocolate');
-"#,
+",
         )
         .await?;
     Ok(())
 }
-"##;
+"#;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum MigrationType {
@@ -1349,6 +1805,17 @@ struct DiscoveredMigration {
     checksum: Option<i32>,
     migration_type: MigrationType,
     source: MigrationSource,
+}
+
+impl DiscoveredMigration {
+    fn info(&self) -> MigrationInfo {
+        MigrationInfo {
+            version: self.version_text.clone(),
+            description: self.description_display.clone(),
+            migration_type: self.migration_type.as_history_type().to_owned(),
+            script: self.script.clone(),
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -1388,25 +1855,6 @@ impl HistoryRow {
             execution_time,
             success,
         }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-struct ParsedVersion(Vec<u64>);
-
-impl ParsedVersion {
-    fn parse(value: &str) -> Result<Self, SchemalaneError> {
-        validate_version(value)?;
-
-        let mut segments = Vec::new();
-        for part in value.split(['.', '_']) {
-            let number = part.parse::<u64>().map_err(|_| {
-                SchemalaneError::Validation(format!("invalid version segment '{part}'"))
-            })?;
-            segments.push(number);
-        }
-
-        Ok(Self(segments))
     }
 }
 
@@ -1468,63 +1916,52 @@ pub fn migrations_dir_exists(path: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        ParsedVersion, SchemalaneError, init_migration_project, parse_rust_filename,
-        parse_sql_filename,
+        SchemalaneError, SqlTransactionMode, init_migration_project, is_non_transactional,
+        parse_sql_migration, resolve_sql_transaction_mode,
     };
     use std::fs;
     use tempfile::TempDir;
 
     #[test]
-    fn parses_sql_filename() {
-        let (version, parsed, description) =
-            parse_sql_filename("V2026.02.24.1__price_histories.sql").expect("valid filename");
-        assert_eq!(version, "2026.02.24.1");
-        assert_eq!(description, "price_histories");
-        assert_eq!(
-            parsed,
-            ParsedVersion(vec![2026, 2, 24, 1]),
-            "version segments should parse numerically"
-        );
-    }
+    fn parse_sql_migration_handles_quotes_comments_and_dollar_blocks() {
+        let sql = r"
+CREATE TABLE ledger (
+    id SERIAL PRIMARY KEY,
+    note TEXT NOT NULL DEFAULT 'fee;rebate'
+);
 
-    #[test]
-    fn rejects_invalid_sql_filename() {
-        let err = parse_sql_filename("2026_02_24_price_histories.sql")
-            .expect_err("invalid filename should fail");
+CREATE FUNCTION add_event() RETURNS trigger AS $$
+BEGIN
+    INSERT INTO ledger(note) VALUES ('body;semicolon');
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+INSERT INTO ledger(note) VALUES ('ok');
+";
+
+        let statements = parse_sql_migration(sql).expect("should parse");
+        assert_eq!(statements.len(), 3, "expected three executable statements");
         assert!(
-            err.to_string().contains("invalid SQL migration filename"),
-            "unexpected error: {err}"
+            statements[0]
+                .preview
+                .to_uppercase()
+                .contains("CREATE TABLE")
+                || statements[0].preview.contains("CreateStmt"),
+            "first statement should be CREATE TABLE, got: {}",
+            statements[0].preview,
         );
-    }
-
-    #[test]
-    fn parses_rust_filename() {
-        let (version, parsed, description) =
-            parse_rust_filename("V2026.02.24.2__seed_reference_data.rs").expect("valid filename");
-        assert_eq!(version, "2026.02.24.2");
-        assert_eq!(description, "seed_reference_data");
-        assert_eq!(
-            parsed,
-            ParsedVersion(vec![2026, 2, 24, 2]),
-            "version segments should parse numerically"
-        );
-    }
-
-    #[test]
-    fn rejects_invalid_rust_filename() {
-        let err = parse_rust_filename("seed_reference_data.rs")
-            .expect_err("invalid filename should fail");
         assert!(
-            err.to_string().contains("invalid Rust migration filename"),
-            "unexpected error: {err}"
+            statements[1].sql.contains("body;semicolon"),
+            "function body should stay intact"
         );
     }
 
     #[test]
-    fn compares_versions_numerically() {
-        let v1 = ParsedVersion::parse("2.10").expect("parse");
-        let v2 = ParsedVersion::parse("2.2").expect("parse");
-        assert!(v1 > v2);
+    fn parse_sql_migration_ignores_empty_segments() {
+        let statements = parse_sql_migration(";\n ;\nSELECT 1;;\n").expect("should parse");
+        assert_eq!(statements.len(), 1);
+        assert_eq!(statements[0].sql, "SELECT 1");
     }
 
     #[test]
@@ -1555,6 +1992,17 @@ mod tests {
             "scaffold should not require manual rust migration module lists"
         );
 
+        let cargo_toml =
+            fs::read_to_string(target.join("Cargo.toml")).expect("read generated Cargo.toml");
+        assert!(
+            cargo_toml.contains("schemalane-core = { version = \"0.1\", registry = \"kellnr\" }"),
+            "scaffold should default schemalane-core dependency to kellnr registry"
+        );
+        assert!(
+            cargo_toml.contains("schemalane-cli = { version = \"0.1\", registry = \"kellnr\" }"),
+            "scaffold should default schemalane-cli dependency to kellnr registry"
+        );
+
         let lib_source = fs::read_to_string(target.join("src/lib.rs")).expect("read src/lib.rs");
         assert!(
             lib_source.contains("embed_migrations!"),
@@ -1580,5 +2028,237 @@ mod tests {
             !report.overwritten.is_empty() || !report.created.is_empty(),
             "force init should write scaffold files"
         );
+    }
+
+    // ── Non-transactional statement detection ───────────────────────────
+
+    /// Helper: parse a single SQL statement and check if it's non-transactional.
+    fn check_non_transactional(sql: &str) -> bool {
+        let stmts = parse_sql_migration(sql).expect("should parse");
+        assert_eq!(stmts.len(), 1, "expected 1 statement for: {sql}");
+        is_non_transactional(&stmts[0])
+    }
+
+    #[test]
+    fn detects_create_index_concurrently() {
+        assert!(check_non_transactional(
+            "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_test ON public.t (LOWER(col));"
+        ));
+    }
+
+    #[test]
+    fn detects_create_unique_index_concurrently() {
+        assert!(check_non_transactional(
+            "CREATE UNIQUE INDEX CONCURRENTLY idx_uniq ON t (col);"
+        ));
+    }
+
+    #[test]
+    fn detects_drop_index_concurrently() {
+        assert!(check_non_transactional(
+            "DROP INDEX CONCURRENTLY IF EXISTS idx_test;"
+        ));
+    }
+
+    #[test]
+    fn detects_vacuum() {
+        assert!(check_non_transactional("VACUUM;"));
+    }
+
+    #[test]
+    fn detects_vacuum_analyze() {
+        assert!(check_non_transactional("VACUUM ANALYZE public.wallets;"));
+    }
+
+    #[test]
+    fn detects_create_database() {
+        assert!(check_non_transactional("CREATE DATABASE test_db;"));
+    }
+
+    #[test]
+    fn detects_drop_database() {
+        assert!(check_non_transactional("DROP DATABASE IF EXISTS test_db;"));
+    }
+
+    #[test]
+    fn detects_alter_system() {
+        assert!(check_non_transactional(
+            "ALTER SYSTEM SET work_mem = '256MB';"
+        ));
+    }
+
+    #[test]
+    fn detects_discard_all() {
+        assert!(check_non_transactional("DISCARD ALL;"));
+    }
+
+    #[test]
+    fn detects_reindex_database() {
+        assert!(check_non_transactional("REINDEX DATABASE chainargos;"));
+    }
+
+    #[test]
+    fn detects_reindex_verbose_schema() {
+        assert!(check_non_transactional("REINDEX (VERBOSE) SCHEMA public;"));
+    }
+
+    #[test]
+    fn detects_reindex_system() {
+        assert!(check_non_transactional("REINDEX SYSTEM chainargos;"));
+    }
+
+    #[test]
+    fn reindex_table_is_transactional() {
+        assert!(!check_non_transactional("REINDEX TABLE public.wallets;"));
+    }
+
+    #[test]
+    fn reindex_index_is_transactional() {
+        assert!(!check_non_transactional(
+            "REINDEX INDEX public.idx_wallets_address;"
+        ));
+    }
+
+    #[test]
+    fn discard_plans_is_transactional() {
+        assert!(!check_non_transactional("DISCARD PLANS;"));
+    }
+
+    #[test]
+    fn discard_sequences_is_transactional() {
+        assert!(!check_non_transactional("DISCARD SEQUENCES;"));
+    }
+
+    #[test]
+    fn discard_temp_is_transactional() {
+        assert!(!check_non_transactional("DISCARD TEMP;"));
+    }
+
+    #[test]
+    fn detects_create_tablespace() {
+        assert!(check_non_transactional(
+            "CREATE TABLESPACE fast_space LOCATION '/ssd';"
+        ));
+    }
+
+    #[test]
+    fn detects_create_subscription() {
+        assert!(check_non_transactional(
+            "CREATE SUBSCRIPTION sub CONNECTION 'host=h dbname=d' PUBLICATION pub;"
+        ));
+    }
+
+    #[test]
+    fn regular_create_index_is_transactional() {
+        assert!(!check_non_transactional(
+            "CREATE INDEX IF NOT EXISTS idx_test ON public.t (col);"
+        ));
+    }
+
+    #[test]
+    fn regular_drop_index_is_transactional() {
+        assert!(!check_non_transactional("DROP INDEX IF EXISTS idx_test;"));
+    }
+
+    #[test]
+    fn create_table_is_transactional() {
+        assert!(!check_non_transactional(
+            "CREATE TABLE t (id SERIAL PRIMARY KEY);"
+        ));
+    }
+
+    #[test]
+    fn insert_is_transactional() {
+        assert!(!check_non_transactional("INSERT INTO t (id) VALUES (1);"));
+    }
+
+    #[test]
+    fn standalone_analyze_is_transactional() {
+        assert!(!check_non_transactional("ANALYZE public.ethereum_txns;"));
+    }
+
+    #[test]
+    fn standalone_analyze_without_table_is_transactional() {
+        assert!(!check_non_transactional("ANALYZE;"));
+    }
+
+    // ── Transaction mode resolution ─────────────────────────────────────
+
+    #[test]
+    fn resolves_all_transactional_statements() {
+        let sql = "CREATE TABLE t (id SERIAL PRIMARY KEY);\nINSERT INTO t (id) VALUES (1);";
+        let stmts = parse_sql_migration(sql).expect("parse");
+        let mode = resolve_sql_transaction_mode(&stmts, "V1__test.sql").expect("should resolve");
+        assert_eq!(mode, SqlTransactionMode::Transactional);
+    }
+
+    #[test]
+    fn resolves_all_non_transactional_statements() {
+        let sql = concat!(
+            "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_a ON t (LOWER(a));\n",
+            "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_b ON t (b, LOWER(c));\n",
+        );
+        let stmts = parse_sql_migration(sql).expect("parse");
+        let mode = resolve_sql_transaction_mode(&stmts, "V2__test.sql").expect("should resolve");
+        assert_eq!(mode, SqlTransactionMode::NonTransactional);
+    }
+
+    #[test]
+    fn rejects_mixed_transactional_and_non_transactional() {
+        let sql = concat!(
+            "CREATE TABLE t (id SERIAL PRIMARY KEY);\n",
+            "CREATE INDEX CONCURRENTLY idx_a ON t (id);\n",
+        );
+        let stmts = parse_sql_migration(sql).expect("parse");
+        let err =
+            resolve_sql_transaction_mode(&stmts, "V3__mixed.sql").expect_err("should reject mixed");
+        assert!(
+            matches!(err, SchemalaneError::MixedStatements { ref script, .. } if script == "V3__mixed.sql"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn drop_index_with_analyze_resolves_to_transactional() {
+        let sql = concat!(
+            "DROP INDEX IF EXISTS public.idx_test;\n",
+            "DROP EXTENSION IF EXISTS pg_trgm;\n",
+            "ANALYZE public.ethereum_txns;\n",
+        );
+        let stmts = parse_sql_migration(sql).expect("parse");
+        let mode = resolve_sql_transaction_mode(&stmts, "V12__revert.sql")
+            .expect("should resolve as transactional");
+        assert_eq!(mode, SqlTransactionMode::Transactional);
+    }
+
+    #[test]
+    fn empty_migration_resolves_to_transactional() {
+        let sql = "-- empty migration\n";
+        let stmts = parse_sql_migration(sql).expect("parse");
+        let mode = resolve_sql_transaction_mode(&stmts, "V4__empty.sql").expect("should resolve");
+        assert_eq!(mode, SqlTransactionMode::Transactional);
+    }
+
+    // ── pg_query splitting ──────────────────────────────────────────────
+
+    #[test]
+    fn parse_sql_migration_splits_multiple_statements() {
+        let stmts = parse_sql_migration("SELECT 1;\nSELECT 2;").expect("parse");
+        assert_eq!(stmts.len(), 2);
+    }
+
+    #[test]
+    fn parse_sql_migration_handles_dollar_quoting() {
+        let stmts = parse_sql_migration(
+            "CREATE FUNCTION f() RETURNS void AS $$BEGIN PERFORM 1; END;$$ LANGUAGE plpgsql;\nSELECT 2;",
+        ).expect("parse");
+        assert_eq!(stmts.len(), 2);
+    }
+
+    #[test]
+    fn parse_sql_migration_handles_semicolons_in_strings() {
+        let stmts = parse_sql_migration("INSERT INTO t VALUES ('a;b');\nSELECT 1;").expect("parse");
+        assert_eq!(stmts.len(), 2);
+        assert!(stmts[0].sql.contains("'a;b'"));
     }
 }
