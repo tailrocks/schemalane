@@ -11,7 +11,7 @@ use crate::render::{
     INDENT, MAX_PREVIEW_WIDTH, STATUS_WIDTH, Verbosity, format_elapsed, pad_index,
     sanitize_terminal, truncate_preview,
 };
-use crate::runner::{print_pending_migrations, print_status_overview};
+use crate::render::{print_pending_migrations, print_status_overview};
 
 pub(crate) struct CliProgressObserver {
     verbosity: Verbosity,

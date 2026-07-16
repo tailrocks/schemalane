@@ -10,7 +10,7 @@ use crate::connect::{create_pool, format_postgres_target};
 use crate::observer::CliProgressObserver;
 use crate::prompt::prompt_yes_no;
 use crate::render::{Verbosity, sanitize_terminal};
-use crate::runner::{
+use crate::render::{
     print_branding, print_error_diagnostics, print_status_overview, print_status_table,
 };
 
