@@ -2,14 +2,12 @@ use crc32fast::Hasher;
 use deadpool_postgres::Pool;
 use pg_query::protobuf;
 use std::collections::{BTreeSet, HashMap, HashSet};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::Instant;
 use tokio_postgres::{Client, Transaction};
 
-#[path = "filename.rs"]
-mod filename;
-
-use filename::{ParsedVersion, parse_rust_filename, parse_sql_filename};
+use crate::discovery::{DiscoveredMigration, MigrationSource, MigrationType};
+use crate::filename::{ParsedVersion, parse_rust_filename, parse_sql_filename};
 
 const ADVISORY_LOCK_NAMESPACE: i64 = 7_333_654_209_921_337;
 
@@ -24,15 +22,20 @@ pub fn derive_advisory_lock_id(schema: &str, history_table: &str) -> i64 {
 }
 
 use crate::checksum::calculate_checksum;
+use crate::history::latest_history_by_script;
 use crate::history::{HistoryRepository, HistoryRow, HistoryWrite};
 use crate::ident::quote_ident;
+use crate::report::build_status_report;
 use crate::{SchemalaneConfig, SchemalaneError};
 
 use crate::{
     AppliedMigration, MigrationFailed, MigrationFinished, MigrationInfo, MigrationObserver,
-    MigrationStarted, MigrationState, NoopMigrationObserver, RunReport, SqlStatementFailed,
-    SqlStatementFinished, SqlStatementStarted, StatusEntry, StatusReport, StatusSummary,
+    MigrationStarted, NoopMigrationObserver, RunReport, SqlStatementFailed, SqlStatementFinished,
+    SqlStatementStarted, StatusReport,
 };
+
+#[cfg(test)]
+use crate::MigrationState;
 
 #[cfg(test)]
 use crate::init_migration_project;
@@ -626,121 +629,6 @@ impl SchemalaneMigrator {
     }
 }
 
-fn build_status_report(
-    schema: &str,
-    history_table: &str,
-    migrations: &[DiscoveredMigration],
-    history: &[HistoryRow],
-) -> StatusReport {
-    let latest = latest_history_by_script(history);
-    let local_by_script: HashMap<&str, &DiscoveredMigration> =
-        migrations.iter().map(|m| (m.script.as_str(), m)).collect();
-
-    let mut entries = Vec::new();
-
-    for migration in migrations {
-        let entry = match latest.get(migration.script.as_str()) {
-            Some(row) if !row.success => StatusEntry {
-                version: row.version.clone(),
-                description: row.description.clone(),
-                migration_type: row.migration_type.clone(),
-                script: row.script.clone(),
-                checksum: row.checksum,
-                installed_rank: Some(row.installed_rank),
-                installed_on: Some(row.installed_on.clone()),
-                execution_time_ms: Some(row.execution_time),
-                state: MigrationState::Failed,
-            },
-            Some(row) if row.checksum != migration.checksum => StatusEntry {
-                version: Some(migration.version_text.clone()),
-                description: migration.description_display.clone(),
-                migration_type: migration.migration_type.as_history_type().to_owned(),
-                script: migration.script.clone(),
-                checksum: migration.checksum,
-                installed_rank: Some(row.installed_rank),
-                installed_on: Some(row.installed_on.clone()),
-                execution_time_ms: Some(row.execution_time),
-                state: MigrationState::ChecksumMismatch,
-            },
-            Some(row) => StatusEntry {
-                version: Some(migration.version_text.clone()),
-                description: migration.description_display.clone(),
-                migration_type: migration.migration_type.as_history_type().to_owned(),
-                script: migration.script.clone(),
-                checksum: migration.checksum,
-                installed_rank: Some(row.installed_rank),
-                installed_on: Some(row.installed_on.clone()),
-                execution_time_ms: Some(row.execution_time),
-                state: MigrationState::Success,
-            },
-            None => StatusEntry {
-                version: Some(migration.version_text.clone()),
-                description: migration.description_display.clone(),
-                migration_type: migration.migration_type.as_history_type().to_owned(),
-                script: migration.script.clone(),
-                checksum: migration.checksum,
-                installed_rank: None,
-                installed_on: None,
-                execution_time_ms: None,
-                state: MigrationState::Pending,
-            },
-        };
-
-        entries.push(entry);
-    }
-
-    for row in latest.values() {
-        if row.success && !local_by_script.contains_key(row.script.as_str()) {
-            entries.push(StatusEntry {
-                version: row.version.clone(),
-                description: row.description.clone(),
-                migration_type: row.migration_type.clone(),
-                script: row.script.clone(),
-                checksum: row.checksum,
-                installed_rank: Some(row.installed_rank),
-                installed_on: Some(row.installed_on.clone()),
-                execution_time_ms: Some(row.execution_time),
-                state: MigrationState::Missing,
-            });
-        }
-    }
-
-    entries.sort_by(|a, b| {
-        let a_version = a
-            .version
-            .as_ref()
-            .and_then(|v| ParsedVersion::parse(v).ok());
-        let b_version = b
-            .version
-            .as_ref()
-            .and_then(|v| ParsedVersion::parse(v).ok());
-
-        a_version
-            .cmp(&b_version)
-            .then_with(|| a.script.cmp(&b.script))
-            .then_with(|| a.installed_rank.cmp(&b.installed_rank))
-    });
-
-    let mut summary = StatusSummary::default();
-    for entry in &entries {
-        match entry.state {
-            MigrationState::Success => summary.success += 1,
-            MigrationState::Pending => summary.pending += 1,
-            MigrationState::Failed => summary.failed += 1,
-            MigrationState::Missing => summary.missing += 1,
-            MigrationState::ChecksumMismatch => summary.checksum_mismatch += 1,
-        }
-    }
-
-    StatusReport {
-        schema: schema.to_owned(),
-        history_table: history_table.to_owned(),
-        migrations: entries,
-        summary,
-    }
-}
-
-/// Transaction mode resolved for a SQL migration file by analysing its statements.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SqlTransactionMode {
     /// All statements are safe to run inside a transaction.
@@ -1053,14 +941,6 @@ async fn execute_rust_migration(
     }
 }
 
-fn latest_history_by_script(history: &[HistoryRow]) -> HashMap<&str, &HistoryRow> {
-    let mut latest = HashMap::new();
-    for row in history {
-        latest.insert(row.script.as_str(), row);
-    }
-    latest
-}
-
 #[expect(
     clippy::cast_possible_truncation,
     reason = "guarded by the preceding bounds check"
@@ -1074,32 +954,6 @@ const fn millis_i32(millis: u128) -> i32 {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum MigrationType {
-    Sql,
-    Rust,
-}
-
-impl MigrationType {
-    const fn as_history_type(self) -> &'static str {
-        match self {
-            Self::Sql => "SQL",
-            Self::Rust => "RUST",
-        }
-    }
-}
-
-#[derive(Clone)]
-struct DiscoveredMigration {
-    version: ParsedVersion,
-    version_text: String,
-    description_display: String,
-    script: String,
-    checksum: Option<i32>,
-    migration_type: MigrationType,
-    source: MigrationSource,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Applied {
     HistoryRecorded,
     NeedsHistoryRow,
@@ -1108,23 +962,6 @@ enum Applied {
 #[derive(Debug, Clone, Copy)]
 struct ApplyOptions {
     skip_applied: bool,
-}
-
-impl DiscoveredMigration {
-    fn info(&self) -> MigrationInfo {
-        MigrationInfo {
-            version: self.version_text.clone(),
-            description: self.description_display.clone(),
-            migration_type: self.migration_type.as_history_type().to_owned(),
-            script: self.script.clone(),
-        }
-    }
-}
-
-#[derive(Clone)]
-enum MigrationSource {
-    SqlFile { path: PathBuf, content: String },
-    RustFile(PathBuf),
 }
 
 pub const fn should_fail_on_pending(report: &StatusReport) -> Result<(), SchemalaneError> {

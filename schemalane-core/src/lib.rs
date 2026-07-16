@@ -2,7 +2,9 @@
 
 mod checksum;
 mod config;
+mod discovery;
 mod error;
+mod filename;
 mod history;
 mod ident;
 mod init;

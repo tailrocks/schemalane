@@ -156,5 +156,14 @@ CREATE INDEX IF NOT EXISTS {success_idx} ON {table} (\"success\");",
 }
 use crate::SchemalaneError;
 use crate::ident::{qualified_table, quote_ident};
+use std::collections::HashMap;
 use tokio_postgres::types::ToSql;
 use tokio_postgres::{Client, Transaction};
+
+pub(crate) fn latest_history_by_script(history: &[HistoryRow]) -> HashMap<&str, &HistoryRow> {
+    let mut latest = HashMap::new();
+    for row in history {
+        latest.insert(row.script.as_str(), row);
+    }
+    latest
+}
