@@ -5,6 +5,7 @@ use schemalane_core::{MigrationState, SchemalaneError, StatusEntry, StatusReport
 use std::collections::BTreeSet;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
+/// Amount of migration and SQL detail rendered by CLI observers.
 pub enum Verbosity {
     /// Migration file names only.
     #[default]

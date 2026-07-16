@@ -1,3 +1,4 @@
+/// Creates an embedded migration-crate scaffold at `path`.
 pub fn init_migration_project(path: &Path, force: bool) -> Result<InitReport, SchemalaneError> {
     if path.exists() {
         if !path.is_dir() {

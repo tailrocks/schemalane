@@ -4,6 +4,7 @@ use std::cmp::Ordering;
 use std::fmt;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Error returned for an invalid version or migration filename.
 pub struct VersionError(pub String);
 
 impl fmt::Display for VersionError {
@@ -15,9 +16,11 @@ impl fmt::Display for VersionError {
 impl std::error::Error for VersionError {}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Normalized, numerically ordered Flyway-style dotted version.
 pub struct ParsedVersion(Vec<String>);
 
 impl ParsedVersion {
+    /// Parses and normalizes a numeric dotted version.
     pub fn parse(value: &str) -> Result<Self, VersionError> {
         let normalized = normalize_version(value);
         let mut parts = Vec::new();
@@ -57,18 +60,21 @@ impl Ord for ParsedVersion {
     }
 }
 
+/// Parses `V<version>__<description>.sql`.
 pub fn parse_sql_filename(
     file_name: &str,
 ) -> Result<(String, ParsedVersion, String), VersionError> {
     parse_versioned_filename(file_name, "SQL", ".sql")
 }
 
+/// Parses `V<version>__<description>.rs`.
 pub fn parse_rust_filename(
     file_name: &str,
 ) -> Result<(String, ParsedVersion, String), VersionError> {
     parse_versioned_filename(file_name, "Rust", ".rs")
 }
 
+/// Parses a versioned migration filename with a caller-selected kind and suffix.
 pub fn parse_versioned_filename(
     file_name: &str,
     kind: &str,

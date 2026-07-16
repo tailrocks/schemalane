@@ -1,4 +1,24 @@
-//! Schemalane's `PostgreSQL` migration engine.
+//! Schemalane's forward-only `PostgreSQL` migration engine.
+//!
+//! The same engine powers standalone migration crates, embedded applications,
+//! the `schemalane` CLI, and direct programmatic use. It discovers versioned
+//! SQL and Rust migrations, validates history and checksums, serializes runs
+//! with a `PostgreSQL` advisory lock, and reports lifecycle events.
+//!
+//! # Quick start
+//!
+//! ```no_run
+//! # async fn demo(pool: deadpool_postgres::Pool) -> Result<(), schemalane_core::SchemalaneError> {
+//! let config = schemalane_core::SchemalaneConfig::default();
+//! let migrator = schemalane_core::SchemalaneMigrator::new(config);
+//! let _report = migrator.up(&pool).await?;
+//! # Ok(())
+//! # }
+//! ```
+//!
+//! Transactional SQL migrations commit their history row atomically with the
+//! migration. Non-transactional SQL and Rust migrations record history after
+//! execution and therefore have at-least-once semantics; make them idempotent.
 
 mod checksum;
 mod config;

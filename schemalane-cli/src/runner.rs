@@ -22,12 +22,14 @@ use crate::render::Verbosity;
 #[cfg(test)]
 use crate::render::truncate_preview;
 
+/// Runs the embedded migration CLI with a generated migrator factory.
 pub struct EmbeddedRunner {
     migrations_dir: &'static str,
     build_migrator: fn(SchemalaneConfig) -> SchemalaneMigrator,
 }
 
 impl EmbeddedRunner {
+    /// Creates a runner for an embedded migration directory and factory.
     pub fn new(
         migrations_dir: &'static str,
         build_migrator: fn(SchemalaneConfig) -> SchemalaneMigrator,
@@ -38,6 +40,7 @@ impl EmbeddedRunner {
         }
     }
 
+    /// Runs with process arguments and exits using the specification's error code.
     pub async fn run(self) {
         if let Err(err) = self.run_with(std::env::args_os()).await {
             eprintln!("{err}");
@@ -45,6 +48,7 @@ impl EmbeddedRunner {
         }
     }
 
+    /// Runs with caller-provided arguments and returns errors to the caller.
     pub async fn run_with<I, T>(self, args: I) -> Result<(), SchemalaneError>
     where
         I: IntoIterator<Item = T>,
@@ -71,6 +75,7 @@ impl EmbeddedRunner {
     }
 }
 
+/// Runs the standalone CLI and exits using the specification's error code.
 pub async fn run_cli() {
     if let Err(err) = run_cli_with(std::env::args_os()).await {
         eprintln!("{err}");
@@ -78,6 +83,7 @@ pub async fn run_cli() {
     }
 }
 
+/// Runs the standalone CLI with caller-provided arguments.
 pub async fn run_cli_with<I, T>(args: I) -> Result<(), SchemalaneError>
 where
     I: IntoIterator<Item = T>,

@@ -2,6 +2,7 @@ use thiserror::Error;
 
 #[derive(Debug, Error)]
 #[non_exhaustive]
+/// Errors produced by configuration, validation, execution, and CLI delegation.
 pub enum SchemalaneError {
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
@@ -38,6 +39,7 @@ pub enum SchemalaneError {
 }
 
 impl SchemalaneError {
+    /// Returns the stable process exit code assigned by the specification.
     #[allow(clippy::match_same_arms)]
     pub const fn exit_code(&self) -> i32 {
         match self {

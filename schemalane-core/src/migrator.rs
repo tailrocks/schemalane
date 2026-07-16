@@ -56,12 +56,14 @@ fn normalize_script_key(script: String) -> String {
 
 use crate::RustMigrationExecutor;
 
+/// Discovers, validates, and executes migrations for one configured target.
 pub struct SchemalaneMigrator {
     pub(crate) config: SchemalaneConfig,
     pub(crate) rust_migrations: HashMap<String, RustMigrationExecutor>,
 }
 
 impl SchemalaneMigrator {
+    /// Creates a migrator with no registered Rust migration executors.
     pub fn new(config: SchemalaneConfig) -> Self {
         Self {
             config,
@@ -69,10 +71,12 @@ impl SchemalaneMigrator {
         }
     }
 
+    /// Returns this migrator's immutable configuration.
     pub const fn config(&self) -> &SchemalaneConfig {
         &self.config
     }
 
+    /// Registers the executable body for a discovered Rust migration script.
     pub fn register_rust_migration<S>(&mut self, script: S, migration: RustMigrationExecutor)
     where
         S: Into<String>,
@@ -89,6 +93,10 @@ impl SchemalaneMigrator {
         self.up_with_observer(pool, &NoopMigrationObserver).await
     }
 
+    /// Applies pending migrations while reporting lifecycle events.
+    ///
+    /// Transactional SQL and its history row commit atomically. Non-transactional
+    /// SQL and Rust migrations have at-least-once semantics and should be idempotent.
     pub async fn up_with_observer<O>(
         &self,
         pool: &Pool,
@@ -144,6 +152,7 @@ impl SchemalaneMigrator {
         Self::finish_locked_session(&session, lock_id, result).await
     }
 
+    /// Compares discovered migrations with schema history without changing either.
     pub async fn status(&self, pool: &Pool) -> Result<StatusReport, SchemalaneError> {
         let client = pool.get().await?;
         let migrations = self.discover_migrations()?;
@@ -172,6 +181,10 @@ impl SchemalaneMigrator {
             .await
     }
 
+    /// Recreates the configured schema and reapplies all migrations with events.
+    ///
+    /// This destructive operation requires `confirmed == true`. Execution and
+    /// history guarantees match [`Self::up_with_observer`].
     pub async fn fresh_with_observer<O>(
         &self,
         pool: &Pool,
@@ -528,6 +541,7 @@ struct ApplyOptions {
     skip_applied: bool,
 }
 
+/// Returns the pending-migration exit condition used by CI status checks.
 pub const fn should_fail_on_pending(report: &StatusReport) -> Result<(), SchemalaneError> {
     if report.summary.pending > 0 {
         Err(SchemalaneError::PendingMigrations(report.summary.pending))

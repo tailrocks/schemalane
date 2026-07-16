@@ -8,6 +8,7 @@ use std::path::PathBuf;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "PascalCase")]
 #[non_exhaustive]
+/// Reconciliation state of one migration script.
 pub enum MigrationState {
     Success,
     Pending,
@@ -18,6 +19,7 @@ pub enum MigrationState {
 
 #[derive(Debug, Clone, Serialize)]
 #[non_exhaustive]
+/// One migration row in a status report.
 pub struct StatusEntry {
     pub version: Option<String>,
     pub description: String,
@@ -31,6 +33,7 @@ pub struct StatusEntry {
     pub state: MigrationState,
 }
 impl StatusEntry {
+    /// Creates a fully populated status entry.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         version: Option<String>,
@@ -59,6 +62,7 @@ impl StatusEntry {
 
 #[derive(Debug, Clone, Serialize, Default)]
 #[non_exhaustive]
+/// Counts status entries by reconciliation state.
 pub struct StatusSummary {
     pub success: usize,
     pub pending: usize,
@@ -67,6 +71,7 @@ pub struct StatusSummary {
     pub checksum_mismatch: usize,
 }
 impl StatusSummary {
+    /// Creates summary counts in state order.
     pub const fn new(
         success: usize,
         pending: usize,
@@ -86,6 +91,7 @@ impl StatusSummary {
 
 #[derive(Debug, Clone, Serialize)]
 #[non_exhaustive]
+/// Status of a configured schema and its local migration set.
 pub struct StatusReport {
     pub schema: String,
     pub history_table: String,
@@ -93,6 +99,7 @@ pub struct StatusReport {
     pub summary: StatusSummary,
 }
 impl StatusReport {
+    /// Creates a status report from entries and precomputed counts.
     pub fn new(
         schema: String,
         history_table: String,
@@ -110,6 +117,7 @@ impl StatusReport {
 
 #[derive(Debug, Clone, Serialize)]
 #[non_exhaustive]
+/// Metadata for one migration applied during a run.
 pub struct AppliedMigration {
     pub version: String,
     pub description: String,
@@ -120,12 +128,14 @@ pub struct AppliedMigration {
 }
 #[derive(Debug, Clone, Serialize, Default)]
 #[non_exhaustive]
+/// Result of applying or freshly reapplying migrations.
 pub struct RunReport {
     pub applied: Vec<AppliedMigration>,
     pub skipped: usize,
 }
 #[derive(Debug, Clone, Serialize, Default)]
 #[non_exhaustive]
+/// Files created and overwritten by project initialization.
 pub struct InitReport {
     pub root: PathBuf,
     pub created: Vec<PathBuf>,

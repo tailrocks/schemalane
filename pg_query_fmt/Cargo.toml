@@ -8,7 +8,7 @@ repository.workspace = true
 homepage.workspace = true
 rust-version.workspace = true
 documentation = "https://docs.rs/pg_query_fmt"
-readme = "../README.md"
+readme = "README.md"
 keywords = ["postgres", "sql", "formatter", "pretty-print", "pg_query"]
 
 [lints]

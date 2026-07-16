@@ -141,10 +141,12 @@ Startup validation errors (hard fail):
 SQL migrations are transactional by default and executed via tokio-postgres connection APIs:
 
 ```rust
-let db = manager.get_connection();
-let txn = db.begin().await?;
-txn.execute_unprepared(sql_text).await?;
-txn.commit().await?;
+let mut client = pool.get().await?;
+let transaction = client.transaction().await?;
+for statement in parsed_statements {
+    transaction.batch_execute(&statement.sql).await?;
+}
+transaction.commit().await?;
 ```
 
 Requirements:
@@ -283,13 +285,31 @@ Execution sequence:
 
 `fresh` never drops the PostgreSQL database itself.
 
-## 10. Programmatic API (Minimum)
+## 10. Programmatic API
 
-Minimum API surface (crate mode):
+The programmatic engine is `schemalane_core::SchemalaneMigrator`. Construct a
+`SchemalaneConfig`, create the migrator, then pass a
+`&deadpool_postgres::Pool` to `up`, `status`, or `fresh`:
 
-- `init_migration_project(&Path, force: bool) -> Result<InitReport, Error>`
-- `Migrator::up(&DatabaseConnection, &Config) -> Result<RunReport, Error>`
-- `Migrator::status(&DatabaseConnection, &Config) -> Result<StatusReport, Error>`
-- `Migrator::fresh(&DatabaseConnection, &Config) -> Result<RunReport, Error>`
+```rust
+let config = schemalane_core::SchemalaneConfig::new()
+    .with_schema("public")
+    .with_migrations_dir("./migrations");
+let migrator = schemalane_core::SchemalaneMigrator::new(config);
+let report = migrator.up(&pool).await?;
+```
 
-All four usage modes (crate, embedded, CLI, programmatic) share this core engine.
+`up_with_observer` and `fresh_with_observer` accept a `MigrationObserver` for
+run, migration, and SQL-statement lifecycle events. Rust migrations are
+registered with `register_rust_migration` and a `RustMigrationExecutor`.
+`init_migration_project(&Path, force)` scaffolds embedded-crate mode, whose
+generated entry point uses `schemalane_macros::embed_migrations!` and
+`schemalane_cli::EmbeddedRunner`.
+
+Transactional SQL migrations commit their successful history row atomically
+with their SQL. Non-transactional SQL and Rust migrations record history only
+after execution and therefore have at-least-once semantics; those migrations
+must be idempotent.
+
+All four usage modes (crate, embedded, CLI, and programmatic) share this core
+engine. Rustdoc owns exact signatures; this specification owns behavior.
