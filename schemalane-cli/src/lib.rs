@@ -2,6 +2,7 @@
 
 mod args;
 mod connect;
+mod delegate;
 mod observer;
 mod prompt;
 mod render;
