@@ -90,11 +90,55 @@ pub(crate) async fn run_db_command(
                 should_fail_on_pending(&report)?;
             }
         }
+        MigrateCommand::Validate {
+            format,
+            fail_on_pending,
+        } => match migrator.validate(pool).await {
+            Ok(report) => {
+                render_validation(&report, format, true)?;
+                if fail_on_pending {
+                    should_fail_on_pending(&report)?;
+                }
+            }
+            Err(error) => {
+                if let Ok(report) = migrator.status(pool).await {
+                    render_validation(&report, format, false)?;
+                    if matches!(format, StatusFormat::Table) {
+                        print_error_diagnostics(&report, &error);
+                    }
+                }
+                return Err(error);
+            }
+        },
         MigrateCommand::Fresh { confirm } => {
             run_fresh_command(migrator, pool, confirm.as_deref(), verbosity).await?;
         }
     }
 
+    Ok(())
+}
+
+fn render_validation(
+    report: &schemalane_core::StatusReport,
+    format: StatusFormat,
+    valid: bool,
+) -> Result<(), SchemalaneError> {
+    match format {
+        StatusFormat::Table => {
+            print_status_overview(report);
+            print_status_table(report);
+        }
+        StatusFormat::Json => println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "report": report,
+                "validation": { "valid": valid }
+            }))
+            .map_err(|error| {
+                SchemalaneError::Internal(format!("failed to encode JSON: {error}"))
+            })?
+        ),
+    }
     Ok(())
 }
 

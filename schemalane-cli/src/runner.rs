@@ -219,6 +219,21 @@ mod tests {
     }
 
     #[test]
+    fn delegation_validate_forwards_json_and_pending_gate() {
+        let command = MigrateCommand::Validate {
+            format: StatusFormat::Json,
+            fail_on_pending: true,
+        };
+        let (args, _) = delegated_args(&command);
+        assert!(args.ends_with(&[
+            "validate".to_owned(),
+            "--format".to_owned(),
+            "json".to_owned(),
+            "--fail-on-pending".to_owned(),
+        ]));
+    }
+
+    #[test]
     fn delegation_fresh_forwards_confirmation() {
         let command = MigrateCommand::Fresh {
             confirm: Some("yes".to_owned()),
@@ -366,6 +381,27 @@ mod tests {
             assert_eq!(args.migration_dir, PathBuf::from(DEFAULT_MIGRATION_DIR));
             assert!(matches!(args.command, Some(MigrateCommand::Status { .. })));
         });
+    }
+
+    #[test]
+    fn parse_validate_command() {
+        let cli = Cli::try_parse_from([
+            "schemalane",
+            "migrate",
+            "validate",
+            "--format",
+            "json",
+            "--fail-on-pending",
+        ])
+        .expect("validate args should parse");
+        let args = unwrap_migrate(cli);
+        assert!(matches!(
+            args.command,
+            Some(MigrateCommand::Validate {
+                format: StatusFormat::Json,
+                fail_on_pending: true
+            })
+        ));
     }
 
     #[test]

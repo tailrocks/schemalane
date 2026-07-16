@@ -114,6 +114,22 @@ pub(crate) fn delegation_command_parts(
                 args.push(OsString::from("--fail-on-pending"));
             }
         }
+        MigrateCommand::Validate {
+            format,
+            fail_on_pending,
+        } => {
+            args.extend([
+                OsString::from("validate"),
+                OsString::from("--format"),
+                OsString::from(match format {
+                    StatusFormat::Table => "table",
+                    StatusFormat::Json => "json",
+                }),
+            ]);
+            if *fail_on_pending {
+                args.push(OsString::from("--fail-on-pending"));
+            }
+        }
         MigrateCommand::Fresh { confirm } => {
             args.push(OsString::from("fresh"));
             if let Some(value) = confirm {

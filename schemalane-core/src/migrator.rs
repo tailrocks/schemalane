@@ -28,11 +28,8 @@ use crate::{SchemalaneConfig, SchemalaneError};
 
 use crate::{
     AppliedMigration, MigrationFailed, MigrationFinished, MigrationObserver, MigrationStarted,
-    NoopMigrationObserver, RunReport, StatusReport,
+    MigrationState, NoopMigrationObserver, RunReport, StatusReport,
 };
-
-#[cfg(test)]
-use crate::MigrationState;
 
 #[cfg(test)]
 use crate::checksum::calculate_checksum;
@@ -170,6 +167,41 @@ impl SchemalaneMigrator {
             &migrations,
             &history,
         ))
+    }
+
+    /// Validates local migrations against schema history without changing the database.
+    ///
+    /// Failed history returns exit condition 4; missing or checksum-mismatched
+    /// migrations return exit condition 3. Pending migrations are valid.
+    pub async fn validate(&self, pool: &Pool) -> Result<StatusReport, SchemalaneError> {
+        let report = self.status(pool).await?;
+        if report.summary.failed > 0 {
+            let scripts = report
+                .migrations
+                .iter()
+                .filter(|entry| entry.state == MigrationState::Failed)
+                .map(|entry| entry.script.as_str())
+                .collect::<Vec<_>>()
+                .join(", ");
+            return Err(SchemalaneError::FailedHistory(scripts));
+        }
+        let mut drift = Vec::new();
+        if report.summary.missing > 0 {
+            drift.push(format!(
+                "{} missing migration(s) in local crate",
+                report.summary.missing
+            ));
+        }
+        if report.summary.checksum_mismatch > 0 {
+            drift.push(format!(
+                "{} checksum mismatch(es)",
+                report.summary.checksum_mismatch
+            ));
+        }
+        if !drift.is_empty() {
+            return Err(SchemalaneError::Drift(drift.join(", ")));
+        }
+        Ok(report)
     }
 
     /// Transactional SQL migrations commit their history row atomically with the migration.

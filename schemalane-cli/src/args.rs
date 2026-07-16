@@ -78,6 +78,13 @@ pub(crate) enum MigrateCommand {
         #[arg(long)]
         fail_on_pending: bool,
     },
+    /// Validate migrations against database history without applying them.
+    Validate {
+        #[arg(long, value_enum, default_value_t = StatusFormat::Table)]
+        format: StatusFormat,
+        #[arg(long)]
+        fail_on_pending: bool,
+    },
     /// Drop all schemas and re-apply migrations.
     Fresh {
         /// Pass "yes" to confirm destructive schema drop.
@@ -110,6 +117,7 @@ impl MigrateCommand {
         match self {
             Self::Up => "migrate up",
             Self::Status { .. } => "migrate status",
+            Self::Validate { .. } => "migrate validate",
             Self::Fresh { .. } => "migrate fresh",
         }
     }

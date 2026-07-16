@@ -65,6 +65,8 @@ CREATE TABLE price_histories (
         assert_eq!(status.summary.failed, 0);
         assert_eq!(status.summary.missing, 0);
         assert_eq!(status.summary.checksum_mismatch, 0);
+        let validation = migrator.validate(&pool).await?;
+        assert_eq!(validation.summary.success, 2);
 
         let history_count = scalar_i64(
             &pool,
@@ -322,6 +324,10 @@ CREATE TABLE cake (
             .ok_or_else(|| "expected migration entry".to_string())?;
 
         assert_eq!(mismatch_entry.state, MigrationState::ChecksumMismatch);
+        assert!(matches!(
+            migrator.validate(&pool).await,
+            Err(SchemalaneError::Drift(_))
+        ));
 
         Ok::<(), Box<dyn Error + 'static>>(())
     })?;
