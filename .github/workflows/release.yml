@@ -52,6 +52,7 @@ jobs:
             echo "index never served $crate $version" >&2
             return 1
           }
+          publish_if_needed schemalane-version
           publish_if_needed schemalane-macros
           publish_if_needed pg_query_fmt
           publish_if_needed schemalane-core

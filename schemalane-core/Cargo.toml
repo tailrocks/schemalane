@@ -22,6 +22,7 @@ path = "src/lib.rs"
 crc32fast = "1.5.0"
 deadpool-postgres = { workspace = true }
 schemalane-macros = { workspace = true }
+schemalane-version = { workspace = true }
 serde = { version = "1.0.228", features = ["derive"] }
 pg_query = { workspace = true }
 pg_query_fmt = { workspace = true }

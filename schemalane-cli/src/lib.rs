@@ -1338,16 +1338,19 @@ fn sort_scripts_by_version(scripts: &mut [String]) {
     scripts.sort_by(|a, b| {
         let va = script_version_key(a);
         let vb = script_version_key(b);
-        va.cmp(&vb).then_with(|| a.cmp(b))
+        match (&va, &vb) {
+            (Some(left), Some(right)) => left.cmp(right),
+            (Some(_), None) => std::cmp::Ordering::Less,
+            (None, Some(_)) => std::cmp::Ordering::Greater,
+            (None, None) => std::cmp::Ordering::Equal,
+        }
+        .then_with(|| a.cmp(b))
     });
 }
 
-fn script_version_key(script: &str) -> Vec<u64> {
-    let version_part = script
-        .strip_prefix('V')
-        .and_then(|rest| rest.split("__").next())
-        .unwrap_or("");
-    parse_version(version_part).unwrap_or_default()
+fn script_version_key(script: &str) -> Option<schemalane_version::ParsedVersion> {
+    let version_part = script.strip_prefix('V')?.split("__").next()?;
+    schemalane_version::ParsedVersion::parse(version_part).ok()
 }
 
 fn print_drift_details(report: &StatusReport) {
@@ -1475,7 +1478,7 @@ fn print_drift_details(report: &StatusReport) {
 }
 
 fn latest_database_version(report: &StatusReport) -> Option<String> {
-    let mut numeric_versions: Vec<(Vec<u64>, i32, String)> = Vec::new();
+    let mut numeric_versions: Vec<(schemalane_version::ParsedVersion, i32, String)> = Vec::new();
     let mut fallback_versions: Vec<(i32, String)> = Vec::new();
 
     for entry in &report.migrations {
@@ -1487,7 +1490,7 @@ fn latest_database_version(report: &StatusReport) -> Option<String> {
             continue;
         };
         let rank = entry.installed_rank.unwrap_or_default();
-        if let Some(segments) = parse_version(version) {
+        if let Ok(segments) = schemalane_version::ParsedVersion::parse(version) {
             numeric_versions.push((segments, rank, version.clone()));
         }
         fallback_versions.push((rank, version.clone()));
@@ -1506,17 +1509,6 @@ fn latest_database_version(report: &StatusReport) -> Option<String> {
     }
 
     None
-}
-
-fn parse_version(version: &str) -> Option<Vec<u64>> {
-    let mut segments = Vec::new();
-    for part in version.split(['.', '_']) {
-        let Ok(value) = part.parse::<u64>() else {
-            return None;
-        };
-        segments.push(value);
-    }
-    Some(segments)
 }
 
 fn database_version_label(version: Option<&str>) -> String {
@@ -1843,6 +1835,41 @@ mod tests {
         };
 
         assert_eq!(latest_database_version(&report), Some("18".to_owned()));
+    }
+
+    #[test]
+    fn latest_database_version_supports_arbitrarily_large_parts() {
+        let huge = "99999999999999999999999999999999999999";
+        let report = StatusReport {
+            schema: "public".to_owned(),
+            history_table: "history".to_owned(),
+            migrations: vec![
+                StatusEntry {
+                    version: Some("10".to_owned()),
+                    description: "small".to_owned(),
+                    migration_type: "SQL".to_owned(),
+                    script: "V10__small.sql".to_owned(),
+                    checksum: None,
+                    installed_rank: Some(1),
+                    installed_on: None,
+                    execution_time_ms: Some(1),
+                    state: MigrationState::Success,
+                },
+                StatusEntry {
+                    version: Some(huge.to_owned()),
+                    description: "large".to_owned(),
+                    migration_type: "SQL".to_owned(),
+                    script: format!("V{huge}__large.sql"),
+                    checksum: None,
+                    installed_rank: Some(2),
+                    installed_on: None,
+                    execution_time_ms: Some(1),
+                    state: MigrationState::Success,
+                },
+            ],
+            summary: StatusSummary::default(),
+        };
+        assert_eq!(latest_database_version(&report).as_deref(), Some(huge));
     }
 
     #[test]

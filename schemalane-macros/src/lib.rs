@@ -1,7 +1,7 @@
 use proc_macro::TokenStream;
 use proc_macro2::Span;
 use quote::{format_ident, quote};
-use std::cmp::Ordering;
+use schemalane_version::ParsedVersion;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use syn::{LitStr, parse_macro_input};
@@ -166,82 +166,12 @@ fn discover_rust_migrations(dir: &Path) -> Result<Vec<RustMigrationFile>, String
     Ok(migrations)
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct ParsedVersion(Vec<String>);
-
-impl PartialOrd for ParsedVersion {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-impl Ord for ParsedVersion {
-    fn cmp(&self, other: &Self) -> Ordering {
-        let max_len = self.0.len().max(other.0.len());
-        for idx in 0..max_len {
-            let left = self.0.get(idx).map_or("0", String::as_str);
-            let right = other.0.get(idx).map_or("0", String::as_str);
-            match compare_normalized_number(left, right) {
-                Ordering::Equal => {}
-                ordering => return ordering,
-            }
-        }
-        Ordering::Equal
-    }
-}
-
-fn parse_rust_migration_filename(file_name: &str) -> Result<ParsedVersion, String> {
-    if !std::path::Path::new(file_name)
-        .extension()
-        .is_some_and(|ext| ext.eq_ignore_ascii_case("rs"))
-    {
-        return Err(format!(
-            "invalid Rust migration filename '{file_name}': expected .rs extension"
-        ));
-    }
-
-    let stem = &file_name[..file_name.len() - 3];
-    let Some(rest) = stem.strip_prefix('V') else {
-        return Err(format!(
-            "invalid Rust migration filename '{file_name}': expected V<version>__<description>.rs"
-        ));
-    };
-    let (version_text, _description) = rest.split_once("__").unwrap_or((rest, ""));
-
-    if version_text.is_empty() {
-        return Err(format!(
-            "invalid Rust migration filename '{file_name}': missing version"
-        ));
-    }
-
-    let mut parts = Vec::new();
-    for part in version_text.replace('_', ".").split('.') {
-        if part.is_empty() || !part.chars().all(|ch| ch.is_ascii_digit()) {
-            return Err(format!(
-                "invalid Rust migration filename '{file_name}': invalid version '{version_text}'"
-            ));
-        }
-        parts.push(normalize_version_part(part));
-    }
-
-    while parts.len() > 1 && parts.last().is_some_and(|part| part == "0") {
-        parts.pop();
-    }
-
-    Ok(ParsedVersion(parts))
-}
-
-fn normalize_version_part(part: &str) -> String {
-    let trimmed = part.trim_start_matches('0');
-    if trimmed.is_empty() {
-        "0".to_owned()
-    } else {
-        trimmed.to_owned()
-    }
-}
-
-fn compare_normalized_number(left: &str, right: &str) -> Ordering {
-    left.len().cmp(&right.len()).then_with(|| left.cmp(right))
+fn parse_rust_migration_filename(
+    file_name: &str,
+) -> Result<schemalane_version::ParsedVersion, String> {
+    schemalane_version::parse_rust_filename(file_name)
+        .map(|(_, version, _)| version)
+        .map_err(|error| error.to_string())
 }
 
 fn unique_module_ident(script: &str, used: &mut HashSet<String>) -> syn::Ident {
@@ -295,12 +225,11 @@ fn compile_error(message: impl AsRef<str>) -> TokenStream {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        ParsedVersion, parse_rust_migration_filename, sanitize_ident, unique_module_ident,
-    };
+    use super::{parse_rust_migration_filename, sanitize_ident, unique_module_ident};
+    use schemalane_version::ParsedVersion;
 
     fn parsed_version(parts: &[&str]) -> ParsedVersion {
-        ParsedVersion(parts.iter().map(|part| (*part).to_owned()).collect())
+        ParsedVersion::parse(&parts.join(".")).expect("fixture version")
     }
 
     #[test]

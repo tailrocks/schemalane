@@ -37,6 +37,7 @@ jobs:
 
       - name: Publish dry run
         run: |
+          cargo publish --dry-run --locked --allow-dirty -p schemalane-version
           cargo publish --dry-run --locked --allow-dirty -p schemalane-macros
           cargo publish --dry-run --locked --allow-dirty -p pg_query_fmt
           cargo package --locked --allow-dirty -p schemalane-core

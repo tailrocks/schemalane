@@ -2366,6 +2366,7 @@ dependencies = [
  "rustls",
  "rustls-platform-verifier",
  "schemalane-core",
+ "schemalane-version",
  "serde_json",
  "temp-env",
  "tokio",
@@ -2382,6 +2383,7 @@ dependencies = [
  "pg_query",
  "pg_query_fmt",
  "schemalane-macros",
+ "schemalane-version",
  "serde",
  "tempfile",
  "testcontainers-modules",
@@ -2405,9 +2407,14 @@ version = "0.1.0"
 dependencies = [
  "proc-macro2",
  "quote",
+ "schemalane-version",
  "syn",
  "trybuild",
 ]
+
+[[package]]
+name = "schemalane-version"
+version = "0.1.0"
 
 [[package]]
 name = "schemars"
