@@ -13,7 +13,7 @@ Repository layout:
 
 Schemalane CLI supports:
 
-- `schemalane migrate init`
+- `schemalane init`
 - `schemalane migrate up`
 - `schemalane migrate status`
 - `schemalane migrate fresh`
@@ -39,7 +39,7 @@ Install `schemalane` locally and test it as a standalone command:
 
 ```sh
 # from workspace root
-cargo install --path backend-rust/schemalane/schemalane-cli --force
+cargo install --path schemalane-cli --force
 
 # confirm binary is available
 schemalane --help
@@ -48,25 +48,17 @@ schemalane --help
 Validate the full flow:
 
 ```sh
-# start local registry via compose
-./docker-up-kellnr.sh
-
 # scaffold migration crate
-schemalane migrate init --path ./migration
+schemalane init --path ./migration
 
-# generated Cargo.toml uses registry = "kellnr" for schemalane-core/cli.
-# ensure ~/.cargo/config.toml contains:
-# [registries.kellnr]
-# index = "sparse+http://localhost:8000/api/v1/crates/"
-#
-# if you do not want to publish schemalane crates yet, replace generated
-# schemalane-core/schemalane-cli dependencies with local path dependencies.
+# The generated Cargo.toml targets crates.io. Until schemalane-cli is
+# published there, use the commented local path dependencies in that file.
 
 # run migration binary directly
-cargo run --manifest-path ./migration/Cargo.toml -- --database-url "$DATABASE_URL" up
+DATABASE_URL="$DATABASE_URL" cargo run --manifest-path ./migration/Cargo.toml -- up
 
 # inspect status
-cargo run --manifest-path ./migration/Cargo.toml -- --database-url "$DATABASE_URL" status
+DATABASE_URL="$DATABASE_URL" cargo run --manifest-path ./migration/Cargo.toml -- status
 
 # run through installed schemalane CLI (defaults to ./migration + implicit `up`)
 DATABASE_URL="$DATABASE_URL" schemalane migrate
@@ -77,7 +69,7 @@ DATABASE_URL="$DATABASE_URL" schemalane migrate
 Generate a migration crate:
 
 ```sh
-cargo run -p schemalane-cli -- migrate init --path ./migration
+cargo run -p schemalane-cli -- init --path ./migration
 ```
 
 This creates:
@@ -91,13 +83,13 @@ This creates:
 Run it from your parent project:
 
 ```sh
-cargo run --manifest-path ./migration/Cargo.toml -- --database-url "$DATABASE_URL" up
+DATABASE_URL="$DATABASE_URL" cargo run --manifest-path ./migration/Cargo.toml -- up
 ```
 
 ## Direct CLI Usage
 
 ```sh
-cargo run -p schemalane-cli -- migrate --database-url "$DATABASE_URL" up
+DATABASE_URL="$DATABASE_URL" cargo run -p schemalane-cli -- migrate up
 ```
 
 Use a migration crate path:
@@ -107,11 +99,11 @@ cargo run -p schemalane-cli -- migrate -d ./migration up
 ```
 
 ```sh
-cargo run -p schemalane-cli -- migrate --database-url "$DATABASE_URL" status
+DATABASE_URL="$DATABASE_URL" cargo run -p schemalane-cli -- migrate status
 ```
 
 ```sh
-cargo run -p schemalane-cli -- migrate --database-url "$DATABASE_URL" fresh --yes
+DATABASE_URL="$DATABASE_URL" cargo run -p schemalane-cli -- migrate fresh --confirm yes
 ```
 
 ## Notes

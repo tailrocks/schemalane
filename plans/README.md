@@ -24,7 +24,7 @@ Wave A — critical fixes (mostly independent; 001 first):
 | 006 | Quote identifiers in `to_regclass` probe | P1 | S | 001 | DONE |
 | 007 | DATABASE_URL to children via env, not argv | P1 | S | — | DONE |
 | 008 | `init` scaffold defaults to crates.io (kill kellnr) | P1 | S | — | BLOCKED — `schemalane-cli` is not published on crates.io; release required |
-| 009 | README + spec match the shipped CLI surface | P1 | S | — | TODO |
+| 009 | README + spec match the shipped CLI surface | P1 | S | — | DONE |
 | 010 | Checksum golden-value tests (Flyway promise) | P1 | S | — | TODO |
 | 011 | Small bug quartet: UTF-8 truncate panic, EOF loop, masked errors, line numbers | P2 | S | — | TODO |
 | 012 | `embed_migrations!` rebuild dependency + `.RS` case | P2 | S-M | — | TODO |

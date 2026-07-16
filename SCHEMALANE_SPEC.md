@@ -32,10 +32,12 @@ Schemalane v1 is a PostgreSQL-only, forward-only migration toolkit with a Flyway
 
 Schemalane CLI namespace:
 
-- `schemalane migrate init`
+- `schemalane init`
 - `schemalane migrate up`
 - `schemalane migrate status`
 - `schemalane migrate fresh`
+
+`init` lives at the CLI root. Database commands live under `migrate`.
 
 ### 2.1 Common Flags (`up`, `status`, `fresh`)
 
@@ -44,24 +46,26 @@ Schemalane CLI namespace:
 - `--schema <schema_name>` (default: `public`)
 - `--history-table <name>` (default: `flyway_schema_history`)
 - `--installed-by <name>` (default: current DB user)
+- `--verbosity <minimal|compact|detailed>` (default: `minimal`; affects `up`
+  and `fresh` progress output)
 
 ### 2.2 Command-Specific Flags
 
-- `schemalane migrate init`
+- `schemalane init`
   - `--path <path>` (default: `./migration`)
   - `--force` (overwrite existing scaffold files)
 - `schemalane migrate status`
   - `--format table|json` (default: `table`)
   - `--fail-on-pending`
 - `schemalane migrate fresh`
-  - `--yes` (required)
+  - `--confirm yes` (required when non-interactive; interactive terminals prompt)
 
 When `--migration-dir` points to a migration crate with `Cargo.toml`, CLI execution delegates to:
 `cargo run --manifest-path <migration_dir>/Cargo.toml -- ...`.
 
 ### 2.3 `init` Scaffold Output
 
-`schemalane migrate init` creates a standalone migration crate with:
+`schemalane init` creates a standalone migration crate with:
 
 - a runnable CLI (`src/main.rs`)
 - a reusable migrator builder (`src/lib.rs`)
@@ -147,6 +151,14 @@ Requirements:
 
 - One SQL file may contain multiple SQL statements.
 - On failure, rollback when possible.
+
+Transaction handling: SQL files are parsed with PostgreSQL's parser. Statements
+that cannot run in a transaction block (`CREATE INDEX CONCURRENTLY`, `DROP INDEX
+CONCURRENTLY`, `VACUUM`, `REINDEX SCHEMA|DATABASE|SYSTEM`, `DISCARD ALL`, `ALTER
+SYSTEM`, `CREATE|DROP DATABASE`, `CREATE|DROP TABLESPACE`, and `CREATE|DROP
+SUBSCRIPTION`) make the whole file run non-transactionally. Mixing transactional
+and non-transactional statements in one file is rejected with exit code 7,
+matching Flyway's `mixed=false` default.
 
 ### 4.3 Rust Migration Execution
 
@@ -252,11 +264,13 @@ Drift is any migration in:
 - `3`: drift detected (`Missing` or `ChecksumMismatch`)
 - `4`: failed migration present (`success = false`)
 - `5`: pending migrations found with `--fail-on-pending`
-- `6`: destructive guard violation (`fresh` without `--yes`)
+- `6`: destructive guard violation (`fresh` without `--confirm yes`)
+- `7`: migration mixes transactional and non-transactional statements
 
 ## 9. `fresh` Semantics
 
-`fresh` is destructive and must require `--yes`.
+`fresh` is destructive and requires `--confirm yes` in non-interactive contexts;
+interactive terminals prompt for confirmation.
 
 Execution sequence:
 
