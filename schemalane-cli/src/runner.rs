@@ -123,7 +123,8 @@ mod tests {
 
     #[test]
     fn error_rendering_preserves_nested_causes() {
-        let certificate = std::io::Error::other("invalid peer certificate: UnknownIssuer");
+        let certificate =
+            std::io::Error::other("\x1b[31minvalid peer certificate: UnknownIssuer\r");
         let handshake = std::io::Error::new(std::io::ErrorKind::ConnectionAborted, certificate);
         let error = schemalane_core::SchemalaneError::Io(handshake);
 
@@ -133,6 +134,8 @@ mod tests {
             rendered.contains("invalid peer certificate: UnknownIssuer"),
             "got: {rendered}"
         );
+        assert!(!rendered.contains('\x1b'), "got: {rendered:?}");
+        assert!(!rendered.contains('\r'), "got: {rendered:?}");
     }
 
     fn unwrap_migrate(cli: Cli) -> MigrateArgs {
