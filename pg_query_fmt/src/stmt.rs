@@ -8,6 +8,10 @@ use pg_query::protobuf::{
 
 use std::fmt::Write;
 
+mod table_body;
+
+use table_body::{ColumnParts, TableItem, fmt_column_line, fmt_table_body};
+
 use crate::FormatError;
 use crate::INDENT;
 use crate::expr::{
@@ -90,113 +94,7 @@ pub(crate) fn fmt_create_table(stmt: &CreateStmt) -> Result<String, FormatError>
         }
     }
 
-    if all_items.len() <= 1 {
-        let single = match &all_items[0] {
-            TableItem::Column(idx) => {
-                let col = &columns[*idx];
-                let mut s = format!("{} {}", col.name, col.type_str);
-                if let Some(ref def) = col.default_expr {
-                    s.push(' ');
-                    s.push_str(def);
-                }
-                if !col.constraints.is_empty() {
-                    s.push(' ');
-                    s.push_str(&col.constraints);
-                }
-                s
-            }
-            TableItem::Constraint(text) => text.clone(),
-        };
-        return Ok(format!("{header} ({single})"));
-    }
-
-    let max_name = columns.iter().map(|c| c.name.len()).max().unwrap_or(0);
-    let max_type = columns.iter().map(|c| c.type_str.len()).max().unwrap_or(0);
-    let max_default = columns
-        .iter()
-        .map(|c| c.default_expr.as_ref().map_or(0, String::len))
-        .max()
-        .unwrap_or(0);
-
-    let total_items = all_items.len();
-    let mut out = String::with_capacity(total_items * 80);
-    out.push_str(&header);
-    out.push_str(" (\n");
-
-    for (i, table_item) in all_items.iter().enumerate() {
-        out.push_str(INDENT);
-        match table_item {
-            TableItem::Column(col_idx) => {
-                out.push_str(&fmt_column_line(
-                    &columns[*col_idx],
-                    max_name,
-                    max_type,
-                    max_default,
-                ));
-            }
-            TableItem::Constraint(text) => {
-                out.push_str(text);
-            }
-        }
-
-        if i + 1 < total_items {
-            out.push(',');
-        }
-        out.push('\n');
-    }
-
-    out.push(')');
-    Ok(out)
-}
-
-enum TableItem {
-    Column(usize),
-    Constraint(String),
-}
-
-struct ColumnParts {
-    name: String,
-    type_str: String,
-    default_expr: Option<String>,
-    constraints: String,
-}
-
-/// Format a single column definition with padded alignment.
-fn fmt_column_line(
-    col: &ColumnParts,
-    max_name: usize,
-    max_type: usize,
-    max_default: usize,
-) -> String {
-    let mut line = String::new();
-
-    line.push_str(&col.name);
-    line.push_str(&" ".repeat(max_name - col.name.len()));
-    line.push(' ');
-
-    line.push_str(&col.type_str);
-
-    if max_default > 0 {
-        if let Some(ref def) = col.default_expr {
-            line.push_str(&" ".repeat(max_type - col.type_str.len()));
-            line.push(' ');
-            line.push_str(def);
-            if !col.constraints.is_empty() {
-                line.push_str(&" ".repeat(max_default - def.len()));
-            }
-        } else if !col.constraints.is_empty() {
-            line.push_str(&" ".repeat(max_type - col.type_str.len() + 1 + max_default));
-        }
-    } else if !col.constraints.is_empty() {
-        line.push_str(&" ".repeat(max_type - col.type_str.len()));
-    }
-
-    if !col.constraints.is_empty() {
-        line.push(' ');
-        line.push_str(&col.constraints);
-    }
-
-    line.trim_end().to_string()
+    Ok(fmt_table_body(&header, &columns, &all_items))
 }
 
 fn fmt_column_def_parts(cd: &ColumnDef) -> Result<ColumnParts, FormatError> {
@@ -411,56 +309,7 @@ pub(crate) fn fmt_create_foreign_table(
                 }
             }
         }
-
-        if all_items.len() <= 1 {
-            let single = match &all_items[0] {
-                TableItem::Column(idx) => {
-                    let col = &columns[*idx];
-                    let mut s = format!("{} {}", col.name, col.type_str);
-                    if let Some(ref def) = col.default_expr {
-                        s.push(' ');
-                        s.push_str(def);
-                    }
-                    if !col.constraints.is_empty() {
-                        s.push(' ');
-                        s.push_str(&col.constraints);
-                    }
-                    s
-                }
-                TableItem::Constraint(text) => text.clone(),
-            };
-            header = format!("{header} ({single})");
-        } else {
-            let max_name = columns.iter().map(|c| c.name.len()).max().unwrap_or(0);
-            let max_type = columns.iter().map(|c| c.type_str.len()).max().unwrap_or(0);
-            let max_default = columns
-                .iter()
-                .map(|c| c.default_expr.as_ref().map_or(0, String::len))
-                .max()
-                .unwrap_or(0);
-
-            let total_items = all_items.len();
-            header.push_str(" (\n");
-            for (i, table_item) in all_items.iter().enumerate() {
-                header.push_str(INDENT);
-                match table_item {
-                    TableItem::Column(col_idx) => {
-                        header.push_str(&fmt_column_line(
-                            &columns[*col_idx],
-                            max_name,
-                            max_type,
-                            max_default,
-                        ));
-                    }
-                    TableItem::Constraint(text) => header.push_str(text),
-                }
-                if i + 1 < total_items {
-                    header.push(',');
-                }
-                header.push('\n');
-            }
-            header.push(')');
-        }
+        header = fmt_table_body(&header, &columns, &all_items);
     }
 
     // SERVER
