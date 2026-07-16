@@ -295,7 +295,9 @@ fn compile_error(message: impl AsRef<str>) -> TokenStream {
 
 #[cfg(test)]
 mod tests {
-    use super::{ParsedVersion, parse_rust_migration_filename};
+    use super::{
+        ParsedVersion, parse_rust_migration_filename, sanitize_ident, unique_module_ident,
+    };
 
     fn parsed_version(parts: &[&str]) -> ParsedVersion {
         ParsedVersion(parts.iter().map(|part| (*part).to_owned()).collect())
@@ -342,5 +344,22 @@ mod tests {
             version,
             parsed_version(&["99999999999999999999999999999999999999"])
         );
+    }
+
+    #[test]
+    fn sanitize_ident_edges() {
+        assert_eq!(sanitize_ident("My-File.Name"), "my_file_name");
+        assert_eq!(sanitize_ident("___"), "migration");
+        assert_eq!(sanitize_ident("9lives"), "m_9lives");
+        assert_eq!(sanitize_ident(""), "migration");
+    }
+
+    #[test]
+    fn unique_module_ident_suffixes_collisions() {
+        let mut used = std::collections::HashSet::new();
+        let first = unique_module_ident("V9__m.rs", &mut used);
+        let second = unique_module_ident("V9__m_.rs", &mut used);
+        assert_eq!(first.to_string(), "v9__m");
+        assert_eq!(second.to_string(), "v9__m_2");
     }
 }

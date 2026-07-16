@@ -44,7 +44,7 @@ Wave B — hardening & structure prerequisites:
 | 021 | One detached session connection (lock leak, search_path, pool≥3) | P2 | M | 001, 019 | DONE |
 | 022 | CLI stops double discovery/status (`on_run_planned`) | P3 | M | 018, 021 | DONE |
 | 023 | CLI contract tests: exit codes, JSON shape, delegation, env | P2 | M | (003, 007 help) | DONE |
-| 024 | Macro success-path codegen tests (fixture crate) | P2 | M | — | TODO |
+| 024 | Macro success-path codegen tests (fixture crate) | P2 | M | — | DONE |
 | 025 | One shared Flyway version parser (`schemalane-version`) | P2 | M | 023 | TODO |
 | 026 | `#[non_exhaustive]` + delete dead public API | P2 | S | after 002/003/014/020/021/022 | TODO |
 | 027 | Error taxonomy: split `Validation` junk drawer | P3 | M | 026, 023 | TODO |

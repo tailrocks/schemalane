@@ -3,6 +3,7 @@ members = [
     "schemalane-core",
     "schemalane-cli",
     "schemalane-macros",
+    "schemalane-embed-tests",
     "pg_query_fmt",
 ]
 default-members = [

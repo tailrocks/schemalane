@@ -1,0 +1,13 @@
+[package]
+name = "schemalane-embed-tests"
+version = "0.0.0"
+edition.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+schemalane-core.workspace = true
+schemalane-cli.workspace = true
+tokio-postgres.workspace = true

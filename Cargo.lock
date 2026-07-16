@@ -2391,6 +2391,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "schemalane-embed-tests"
+version = "0.0.0"
+dependencies = [
+ "schemalane-cli",
+ "schemalane-core",
+ "tokio-postgres",
+]
+
+[[package]]
 name = "schemalane-macros"
 version = "0.1.0"
 dependencies = [
