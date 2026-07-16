@@ -24,6 +24,8 @@ pub fn derive_advisory_lock_id(schema: &str, history_table: &str) -> i64 {
     (ADVISORY_LOCK_NAMESPACE & !0xFFFF_FFFFi64) | low
 }
 
+use crate::checksum::calculate_checksum;
+use crate::ident::{qualified_table, quote_ident};
 use crate::{SchemalaneConfig, SchemalaneError};
 
 use crate::{
@@ -1059,14 +1061,6 @@ fn latest_history_by_script(history: &[HistoryRow]) -> HashMap<&str, &HistoryRow
     latest
 }
 
-fn quote_ident(name: &str) -> String {
-    format!("\"{}\"", name.replace('"', "\"\""))
-}
-
-fn qualified_table(schema: &str, table: &str) -> String {
-    format!("{}.{}", quote_ident(schema), quote_ident(table))
-}
-
 #[expect(
     clippy::cast_possible_truncation,
     reason = "guarded by the preceding bounds check"
@@ -1077,32 +1071,6 @@ const fn millis_i32(millis: u128) -> i32 {
     } else {
         millis as i32
     }
-}
-
-/// Flyway-compatible checksum: CRC-32 over each line's UTF-8 bytes, with
-/// line terminators excluded. Matches `org.flywaydb.core.internal.util.ChecksumCalculator`,
-/// which reads via `BufferedReader.readLine()` (splits on `\n`, `\r\n`, or `\r`).
-///
-/// Errors if the content is not valid UTF-8 — Flyway uses a UTF-8 `BufferedReader`
-/// by default and surfaces `MalformedInputException` rather than silently
-/// hashing a substituted value. Hashing zero bytes (i.e. checksum `0`) for an
-/// invalid file would silently misclassify drift state for every subsequent
-/// `status` / `up` run.
-fn calculate_checksum(script: &str, bytes: &[u8]) -> Result<i32, SchemalaneError> {
-    let text = std::str::from_utf8(bytes).map_err(|err| {
-        SchemalaneError::Validation(format!(
-            "migration {script}: content is not valid UTF-8 (invalid byte at offset {}): {err}",
-            err.valid_up_to()
-        ))
-    })?;
-    let mut hasher = Hasher::new();
-    // `str::lines()` matches BufferedReader.readLine() for files that don't
-    // contain lone `\r` characters: splits on `\n` or `\r\n`, excludes the
-    // terminator, no trailing empty line for files that end with a newline.
-    for line in text.lines() {
-        hasher.update(line.as_bytes());
-    }
-    Ok(i32::from_be_bytes(hasher.finalize().to_be_bytes()))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
