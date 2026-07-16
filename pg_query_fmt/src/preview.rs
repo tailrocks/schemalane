@@ -67,7 +67,7 @@ fn format_name_list(nodes: &[protobuf::Node]) -> String {
 }
 
 /// Returns the SQL keyword for an `ObjectType` enum value.
-fn object_type_label(objtype: i32) -> &'static str {
+pub(crate) fn object_type_label(objtype: i32) -> &'static str {
     match objtype {
         x if x == protobuf::ObjectType::ObjectTable as i32 => "TABLE",
         x if x == protobuf::ObjectType::ObjectIndex as i32 => "INDEX",

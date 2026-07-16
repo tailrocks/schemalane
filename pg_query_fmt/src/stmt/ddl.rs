@@ -6,7 +6,7 @@ use pg_query::protobuf::{
     CreateFunctionStmt, CreateStmt, DropBehavior, FunctionParameterMode, IndexStmt, ViewStmt,
 };
 
-use crate::expr::{fmt_index_elem, fmt_node, fmt_range_var, fmt_type_name};
+use crate::expr::{fmt_index_elem, fmt_node, fmt_range_var, fmt_type_name, quote_identifier};
 use crate::{FormatError, INDENT};
 
 use super::table_body::{ColumnParts, TableItem, fmt_column_line, fmt_table_body};
@@ -89,7 +89,7 @@ pub(crate) fn fmt_create_table(stmt: &CreateStmt) -> Result<String, FormatError>
 }
 
 fn fmt_column_def_parts(cd: &ColumnDef) -> Result<ColumnParts, FormatError> {
-    let name = cd.colname.clone();
+    let name = quote_identifier(&cd.colname);
     let type_str = cd
         .type_name
         .as_ref()
@@ -415,7 +415,8 @@ pub(crate) fn fmt_alter_table(stmt: &AlterTableStmt) -> Result<String, FormatErr
         .map(fmt_range_var)
         .unwrap_or_default();
 
-    let header = format!("ALTER TABLE {relation}");
+    let object_type = crate::preview::object_type_label(stmt.objtype);
+    let header = format!("ALTER {object_type} {relation}");
 
     // First pass: classify commands — extract ColumnParts for ADD COLUMN,
     // format everything else as strings.
@@ -631,7 +632,7 @@ fn fmt_alter_table_cmd(cmd: &pg_query::protobuf::AlterTableCmd) -> Result<String
 }
 
 fn fmt_column_def_inline(cd: &ColumnDef) -> Result<String, FormatError> {
-    let mut parts = vec![cd.colname.clone()];
+    let mut parts = vec![quote_identifier(&cd.colname)];
 
     if let Some(ref tn) = cd.type_name {
         parts.push(fmt_type_name(tn)?);
@@ -802,12 +803,16 @@ pub(crate) fn fmt_create_function(stmt: &CreateFunctionStmt) -> Result<String, F
     // Assemble
     if let Some(body_text) = body {
         let trimmed_body = body_text.trim_start_matches('\n');
-        header.push_str(" AS $$\n");
+        let delimiter = available_dollar_quote(trimmed_body);
+        header.push_str(" AS ");
+        header.push_str(&delimiter);
+        header.push('\n');
         header.push_str(trimmed_body);
         if !trimmed_body.ends_with('\n') {
             header.push('\n');
         }
-        header.push_str("$$ LANGUAGE ");
+        header.push_str(&delimiter);
+        header.push_str(" LANGUAGE ");
         header.push_str(&language.unwrap_or_else(|| "sql".into()));
     } else if let Some(lang) = language {
         header.push_str(" LANGUAGE ");
@@ -820,6 +825,23 @@ pub(crate) fn fmt_create_function(stmt: &CreateFunctionStmt) -> Result<String, F
     }
 
     Ok(header)
+}
+
+fn available_dollar_quote(body: &str) -> String {
+    if !body.contains("$$") {
+        return "$$".to_owned();
+    }
+    for suffix in 0_u32.. {
+        let tag = if suffix == 0 {
+            "$fn$".to_owned()
+        } else {
+            format!("$fn{suffix}$")
+        };
+        if !body.contains(&tag) {
+            return tag;
+        }
+    }
+    unreachable!("u32 tag space exhausted")
 }
 
 fn fmt_function_param(fp: &pg_query::protobuf::FunctionParameter) -> Result<String, FormatError> {

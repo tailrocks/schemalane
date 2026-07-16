@@ -1,3 +1,4 @@
+use crate::expr::quote_identifier;
 use pg_query::protobuf::node::Node;
 
 mod ddl;
@@ -16,7 +17,7 @@ pub(super) fn name_list_to_string(nodes: &[pg_query::protobuf::Node]) -> String 
     nodes
         .iter()
         .filter_map(|n| match n.node.as_ref() {
-            Some(Node::String(s)) => Some(s.sval.clone()),
+            Some(Node::String(s)) => Some(quote_identifier(&s.sval)),
             _ => None,
         })
         .collect::<Vec<_>>()
@@ -27,7 +28,7 @@ pub(super) fn node_string_list(nodes: &[pg_query::protobuf::Node]) -> Vec<String
     nodes
         .iter()
         .filter_map(|n| match n.node.as_ref() {
-            Some(Node::String(s)) => Some(s.sval.clone()),
+            Some(Node::String(s)) => Some(quote_identifier(&s.sval)),
             _ => None,
         })
         .collect()

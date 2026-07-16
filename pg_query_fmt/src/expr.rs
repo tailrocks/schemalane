@@ -150,8 +150,16 @@ fn fmt_a_expr(expr: &AExpr) -> Result<String, FormatError> {
         })
         .unwrap_or_default();
 
-    let left = expr.lexpr.as_ref().map(|n| fmt_node(n)).transpose()?;
-    let right = expr.rexpr.as_ref().map(|n| fmt_node(n)).transpose()?;
+    let left = expr
+        .lexpr
+        .as_ref()
+        .map(|node| fmt_node_parenthesized_if_compound(node))
+        .transpose()?;
+    let right = expr
+        .rexpr
+        .as_ref()
+        .map(|node| fmt_node_parenthesized_if_compound(node))
+        .transpose()?;
 
     let kind = AExprKind::try_from(expr.kind).unwrap_or(AExprKind::Undefined);
     match kind {
@@ -244,9 +252,25 @@ fn extract_between_bounds(expr: &AExpr) -> Result<(String, String), FormatError>
 // ── BoolExpr ────────────────────────────────────────────────────────────────
 
 fn fmt_bool_expr(expr: &BoolExpr) -> Result<String, FormatError> {
-    let parts: Vec<String> = expr.args.iter().map(fmt_node).collect::<Result<_, _>>()?;
+    let kind = BoolExprType::try_from(expr.boolop).unwrap_or(BoolExprType::Undefined);
+    let parts: Vec<String> = expr
+        .args
+        .iter()
+        .map(|node| {
+            let formatted = fmt_node(node)?;
+            let different_bool_kind = matches!(
+                node.node.as_ref(),
+                Some(Node::BoolExpr(child)) if child.boolop != expr.boolop
+            );
+            Ok(if different_bool_kind {
+                format!("({formatted})")
+            } else {
+                formatted
+            })
+        })
+        .collect::<Result<_, FormatError>>()?;
 
-    match BoolExprType::try_from(expr.boolop).unwrap_or(BoolExprType::Undefined) {
+    match kind {
         BoolExprType::AndExpr => Ok(parts.join(" AND ")),
         BoolExprType::OrExpr => Ok(format!("({})", parts.join(" OR "))),
         BoolExprType::NotExpr => Ok(format!(
@@ -255,6 +279,19 @@ fn fmt_bool_expr(expr: &BoolExpr) -> Result<String, FormatError> {
         )),
         BoolExprType::Undefined => node_deparse_fallback(&Node::BoolExpr(Box::new(expr.clone()))),
     }
+}
+
+fn fmt_node_parenthesized_if_compound(
+    node: &pg_query::protobuf::Node,
+) -> Result<String, FormatError> {
+    let formatted = fmt_node(node)?;
+    Ok(
+        if matches!(node.node.as_ref(), Some(Node::AExpr(_) | Node::BoolExpr(_))) {
+            format!("({formatted})")
+        } else {
+            formatted
+        },
+    )
 }
 
 // ── NullTest ────────────────────────────────────────────────────────────────
@@ -314,19 +351,32 @@ fn fmt_a_indirection(ai: &AIndirection) -> Result<String, FormatError> {
     for elem in &ai.indirection {
         match elem.node.as_ref() {
             Some(Node::String(s)) => {
-                result = format!("{result}.{}", quote_identifier(&s.sval));
+                result.push('.');
+                result.push_str(&quote_identifier(&s.sval));
             }
             Some(Node::AIndices(idx)) => {
-                let index = idx
+                let upper = idx
                     .uidx
                     .as_ref()
                     .map(|n| fmt_node(n))
                     .transpose()?
                     .unwrap_or_default();
-                result = format!("{result}[{index}]");
+                result.push('[');
+                if idx.is_slice {
+                    let lower = idx
+                        .lidx
+                        .as_ref()
+                        .map(|node| fmt_node(node))
+                        .transpose()?
+                        .unwrap_or_default();
+                    result.push_str(&lower);
+                    result.push(':');
+                }
+                result.push_str(&upper);
+                result.push(']');
             }
             Some(Node::AStar(_)) => {
-                result = format!("{result}.*");
+                result.push_str(".*");
             }
             _ => {
                 let part = fmt_node(elem)?;
@@ -475,22 +525,38 @@ fn map_pg_catalog_type(name: &str) -> Option<&'static str> {
 // ── Identifier quoting ──────────────────────────────────────────────────────
 
 pub(crate) fn quote_identifier(ident: &str) -> String {
-    ident.to_string()
+    let plain = !ident.is_empty()
+        && ident
+            .chars()
+            .next()
+            .is_some_and(|character| character.is_ascii_lowercase() || character == '_')
+        && ident.chars().all(|character| {
+            character.is_ascii_lowercase() || character.is_ascii_digit() || character == '_'
+        });
+    if plain && !crate::highlight::SQL_KEYWORDS.contains(&ident.to_ascii_uppercase().as_str()) {
+        ident.to_owned()
+    } else {
+        format!("\"{}\"", ident.replace('"', "\"\""))
+    }
 }
 
 // ── RangeVar ────────────────────────────────────────────────────────────────
 
 pub(crate) fn fmt_range_var(rv: &pg_query::protobuf::RangeVar) -> String {
     let mut result = if rv.schemaname.is_empty() {
-        rv.relname.clone()
+        quote_identifier(&rv.relname)
     } else {
-        format!("{}.{}", rv.schemaname, rv.relname)
+        format!(
+            "{}.{}",
+            quote_identifier(&rv.schemaname),
+            quote_identifier(&rv.relname)
+        )
     };
 
     if let Some(alias) = &rv.alias
         && !alias.aliasname.is_empty()
     {
-        result = format!("{result} AS {}", alias.aliasname);
+        result = format!("{result} AS {}", quote_identifier(&alias.aliasname));
     }
 
     result
@@ -559,12 +625,21 @@ pub(crate) fn fmt_res_target_update(
 
 pub(crate) fn fmt_index_elem(ie: &pg_query::protobuf::IndexElem) -> Result<String, FormatError> {
     let mut result = if !ie.name.is_empty() {
-        ie.name.clone()
+        quote_identifier(&ie.name)
     } else if let Some(expr) = &ie.expr {
         fmt_node(expr)?
     } else {
         String::new()
     };
+
+    if !ie.collation.is_empty() {
+        result.push_str(" COLLATE ");
+        result.push_str(&fmt_identifier_name_list(&ie.collation));
+    }
+    if !ie.opclass.is_empty() {
+        result.push(' ');
+        result.push_str(&fmt_identifier_name_list(&ie.opclass));
+    }
 
     match SortByDir::try_from(ie.ordering).unwrap_or(SortByDir::Undefined) {
         SortByDir::SortbyAsc => result.push_str(" ASC"),
@@ -579,6 +654,17 @@ pub(crate) fn fmt_index_elem(ie: &pg_query::protobuf::IndexElem) -> Result<Strin
     }
 
     Ok(result)
+}
+
+fn fmt_identifier_name_list(nodes: &[pg_query::protobuf::Node]) -> String {
+    nodes
+        .iter()
+        .filter_map(|node| match node.node.as_ref() {
+            Some(Node::String(value)) => Some(quote_identifier(&value.sval)),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join(".")
 }
 
 // ── BooleanTest ─────────────────────────────────────────────────────────────
@@ -611,7 +697,8 @@ fn fmt_case_expr(ce: &CaseExpr) -> Result<String, FormatError> {
 
     if let Some(ref arg) = ce.arg {
         let a = fmt_node(arg)?;
-        result = format!("{result} {a}");
+        result.push(' ');
+        result.push_str(&a);
     }
 
     for when_node in &ce.args {
@@ -628,13 +715,17 @@ fn fmt_case_expr(ce: &CaseExpr) -> Result<String, FormatError> {
                 .map(|n| fmt_node(n))
                 .transpose()?
                 .unwrap_or_default();
-            result = format!("{result} WHEN {cond} THEN {then}");
+            result.push_str(" WHEN ");
+            result.push_str(&cond);
+            result.push_str(" THEN ");
+            result.push_str(&then);
         }
     }
 
     if let Some(ref def) = ce.defresult {
         let d = fmt_node(def)?;
-        result = format!("{result} ELSE {d}");
+        result.push_str(" ELSE ");
+        result.push_str(&d);
     }
 
     result.push_str(" END");

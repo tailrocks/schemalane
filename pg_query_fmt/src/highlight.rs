@@ -6,7 +6,7 @@
 use owo_colors::OwoColorize;
 use std::fmt::Write;
 
-const SQL_KEYWORDS: &[&str] = &[
+pub(crate) const SQL_KEYWORDS: &[&str] = &[
     "ADD",
     "ALL",
     "ALTER",

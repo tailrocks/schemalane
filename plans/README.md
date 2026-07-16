@@ -60,7 +60,7 @@ Wave C — structure & docs depth:
 | 032 | CLI module split (1431-line lib.rs → modules) | P3 | L | 022, 029, 023 | DONE |
 | 033 | Formatter split + shared table-body emitter | P3 | M | — | DONE |
 | 034 | Core sheds pg_query_fmt dep (previews move to CLI) | P3 | M | 026, (022) | DONE — package verification remains under 015's crates.io bootstrap blocker |
-| 035 | Formatter fidelity: quoting, parens, dropped clauses, round-trip harness | P3 | M | 033 | TODO |
+| 035 | Formatter fidelity: quoting, parens, dropped clauses, round-trip harness | P3 | M | 033 | DONE |
 | 036 | Docs depth: spec §10/§4.2 rewrite, rustdoc, pg_query_fmt README | P3 | M | 009, 026, 027 | TODO |
 
 Wave D — direction spikes (design/investigate, maintainer sign-off before building):

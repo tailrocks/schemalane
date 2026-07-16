@@ -1,7 +1,7 @@
 use pg_query::protobuf::node::Node;
 use pg_query::protobuf::{
-    CteMaterialize, DeleteStmt, InsertStmt, JoinType, OnConflictAction, SelectStmt, SetOperation,
-    UpdateStmt,
+    CteMaterialize, DeleteStmt, InsertStmt, JoinType, LockClauseStrength, LockWaitPolicy,
+    OnConflictAction, SelectStmt, SetOperation, UpdateStmt,
 };
 use std::fmt::Write;
 
@@ -48,9 +48,17 @@ pub(crate) fn fmt_select_stmt(stmt: &SelectStmt) -> Result<String, FormatError> 
 
     // SELECT [DISTINCT]
     let select_keyword = if stmt.distinct_clause.is_empty() {
-        "SELECT"
+        "SELECT".to_owned()
+    } else if stmt.distinct_clause.iter().all(|node| node.node.is_none()) {
+        "SELECT DISTINCT".to_owned()
     } else {
-        "SELECT DISTINCT"
+        let expressions = stmt
+            .distinct_clause
+            .iter()
+            .filter(|node| node.node.is_some())
+            .map(fmt_node)
+            .collect::<Result<Vec<_>, _>>()?;
+        format!("SELECT DISTINCT ON ({})", expressions.join(", "))
     };
     clauses.push(format!("{select_keyword} {}", targets.join(", ")));
 
@@ -116,6 +124,37 @@ pub(crate) fn fmt_select_stmt(stmt: &SelectStmt) -> Result<String, FormatError> 
 
     if let Some(ref lo) = stmt.limit_offset {
         clauses.push(format!("OFFSET {}", fmt_node(lo)?));
+    }
+
+    for node in &stmt.locking_clause {
+        let Some(Node::LockingClause(lock)) = node.node.as_ref() else {
+            continue;
+        };
+        let strength = match LockClauseStrength::try_from(lock.strength)
+            .unwrap_or(LockClauseStrength::Undefined)
+        {
+            LockClauseStrength::LcsForupdate => "FOR UPDATE",
+            LockClauseStrength::LcsFornokeyupdate => "FOR NO KEY UPDATE",
+            LockClauseStrength::LcsForshare => "FOR SHARE",
+            LockClauseStrength::LcsForkeyshare => "FOR KEY SHARE",
+            _ => continue,
+        };
+        let mut clause = strength.to_owned();
+        if !lock.locked_rels.is_empty() {
+            let relations = lock
+                .locked_rels
+                .iter()
+                .map(fmt_node)
+                .collect::<Result<Vec<_>, _>>()?;
+            clause.push_str(" OF ");
+            clause.push_str(&relations.join(", "));
+        }
+        match LockWaitPolicy::try_from(lock.wait_policy).unwrap_or(LockWaitPolicy::Undefined) {
+            LockWaitPolicy::LockWaitSkip => clause.push_str(" SKIP LOCKED"),
+            LockWaitPolicy::LockWaitError => clause.push_str(" NOWAIT"),
+            _ => {}
+        }
+        clauses.push(clause);
     }
 
     Ok(clauses.join("\n"))
