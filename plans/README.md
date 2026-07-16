@@ -20,7 +20,7 @@ Wave A — critical fixes (mostly independent; 001 first):
 | 002 | `fresh` drops only the target schema | P1 | M | 001 | DONE |
 | 003 | Delegated exit codes propagate verbatim | P1 | S-M | — | DONE |
 | 004 | stdout machine-clean: JSON/stderr/ANSI/control chars | P1 | M | — | DONE |
-| 005 | Semantic duplicate-version detection | P1 | S | — | TODO |
+| 005 | Semantic duplicate-version detection | P1 | S | — | DONE |
 | 006 | Quote identifiers in `to_regclass` probe | P1 | S | 001 | TODO |
 | 007 | DATABASE_URL to children via env, not argv | P1 | S | — | TODO |
 | 008 | `init` scaffold defaults to crates.io (kill kellnr) | P1 | S | — | TODO |

@@ -668,14 +668,15 @@ impl SchemalaneMigrator {
         let mut migrations = self.discover_sql_migrations()?;
         migrations.extend(self.discover_rust_migrations()?);
 
-        let mut versions = BTreeSet::new();
+        let mut versions: std::collections::BTreeMap<&ParsedVersion, &str> =
+            std::collections::BTreeMap::new();
         let mut scripts = BTreeSet::new();
 
         for migration in &migrations {
-            if !versions.insert(migration.version_text.clone()) {
+            if let Some(existing) = versions.insert(&migration.version, migration.script.as_str()) {
                 return Err(SchemalaneError::Validation(format!(
-                    "duplicate migration version '{}'",
-                    migration.version_text
+                    "duplicate migration version '{}': '{}' and '{}' resolve to the same version",
+                    migration.version_text, existing, migration.script
                 )));
             }
             if !scripts.insert(migration.script.clone()) {
@@ -1897,8 +1898,9 @@ pub fn migrations_dir_exists(path: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        SchemalaneError, SqlTransactionMode, init_migration_project, is_non_transactional,
-        parse_sql_migration, resolve_sql_transaction_mode,
+        SchemalaneConfig, SchemalaneError, SchemalaneMigrator, SqlTransactionMode,
+        init_migration_project, is_non_transactional, parse_sql_migration,
+        resolve_sql_transaction_mode,
     };
     use std::fs;
     use tempfile::TempDir;
@@ -1908,6 +1910,70 @@ mod tests {
         for code in [1, 2, 3, 4, 5, 6, 7, 42] {
             assert_eq!(SchemalaneError::Delegated { code }.exit_code(), code);
         }
+    }
+
+    fn migrator_with_files(files: &[(&str, &str)]) -> (TempDir, SchemalaneMigrator) {
+        let temp = TempDir::new().expect("temp dir");
+        let dir = temp.path().join("migrations");
+        fs::create_dir_all(&dir).expect("mkdir");
+        for (name, contents) in files {
+            fs::write(dir.join(name), contents).expect("write migration");
+        }
+        let migrator = SchemalaneMigrator::new(SchemalaneConfig {
+            migrations_dir: dir,
+            ..Default::default()
+        });
+        (temp, migrator)
+    }
+
+    #[test]
+    fn rejects_semantically_duplicate_versions() {
+        let (_temp, migrator) =
+            migrator_with_files(&[("V1__a.sql", "SELECT 1;"), ("V1.0__b.sql", "SELECT 2;")]);
+
+        let err = migrator
+            .discover_migrations()
+            .err()
+            .expect("V1 and V1.0 must collide");
+        let msg = err.to_string();
+        assert!(msg.contains("duplicate migration version"), "got: {msg}");
+        assert!(
+            msg.contains("V1__a.sql") && msg.contains("V1.0__b.sql"),
+            "got: {msg}"
+        );
+    }
+
+    #[test]
+    fn rejects_leading_zero_duplicate_versions() {
+        let (_temp, migrator) =
+            migrator_with_files(&[("V1__a.sql", "SELECT 1;"), ("V01__b.sql", "SELECT 2;")]);
+        let err = migrator
+            .discover_migrations()
+            .err()
+            .expect("V1 and V01 must collide");
+        let msg = err.to_string();
+        assert!(msg.contains("V1__a.sql") && msg.contains("V01__b.sql"));
+    }
+
+    #[test]
+    fn rejects_cross_type_duplicate_versions() {
+        let (_temp, migrator) = migrator_with_files(&[
+            ("V1__a.sql", "SELECT 1;"),
+            ("V1_0__b.rs", "pub async fn migration() {}"),
+        ]);
+        let err = migrator
+            .discover_migrations()
+            .err()
+            .expect("SQL and Rust semantic versions must collide");
+        let msg = err.to_string();
+        assert!(msg.contains("V1__a.sql") && msg.contains("V1_0__b.rs"));
+    }
+
+    #[test]
+    fn accepts_distinct_versions_with_shared_prefix() {
+        let (_temp, migrator) =
+            migrator_with_files(&[("V1__a.sql", "SELECT 1;"), ("V1.1__b.sql", "SELECT 2;")]);
+        assert_eq!(migrator.discover_migrations().expect("distinct").len(), 2);
     }
 
     #[test]
