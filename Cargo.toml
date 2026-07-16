@@ -28,6 +28,7 @@ owo-colors = "4.3.0"
 pg_query = "6.1.1"
 tokio = "1.52"
 tokio-postgres = "0.7.18"
+thiserror = "2.0.18"
 schemalane-version = { version = "0.1.0", path = "schemalane-version" }
 
 schemalane-core = { version = "0.1.20", path = "schemalane-core" }

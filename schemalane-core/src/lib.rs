@@ -97,6 +97,12 @@ pub enum SchemalaneError {
     #[error("Validation error: {0}")]
     Validation(String),
 
+    #[error("Configuration error: {0}")]
+    Config(String),
+
+    #[error("Internal error: {0}")]
+    Internal(String),
+
     #[error("Drift detected: {0}")]
     Drift(String),
 
@@ -126,9 +132,11 @@ pub enum SchemalaneError {
 }
 
 impl SchemalaneError {
+    #[allow(clippy::match_same_arms)] // Keep spec-defined runtime categories explicit.
     pub const fn exit_code(&self) -> i32 {
         match self {
             Self::Validation(_) => 2,
+            Self::Config(_) | Self::Internal(_) => 1,
             Self::Drift(_) => 3,
             Self::FailedHistory(_) => 4,
             Self::PendingMigrations(_) => 5,
@@ -2039,6 +2047,8 @@ mod tests {
     fn exit_codes_match_spec_section_8() {
         use SchemalaneError as E;
         assert_eq!(E::Validation("x".into()).exit_code(), 2);
+        assert_eq!(E::Config("x".into()).exit_code(), 1);
+        assert_eq!(E::Internal("x".into()).exit_code(), 1);
         assert_eq!(E::Drift("x".into()).exit_code(), 3);
         assert_eq!(E::FailedHistory("x".into()).exit_code(), 4);
         assert_eq!(E::PendingMigrations(3).exit_code(), 5);

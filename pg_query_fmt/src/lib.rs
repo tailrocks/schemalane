@@ -7,8 +7,6 @@
 #![doc = "walked recursively to produce formatted SQL text with proper indentation"]
 #![doc = "and alignment."]
 
-use std::fmt;
-
 use pg_query::protobuf::node::Node;
 
 pub(crate) mod expr;
@@ -21,24 +19,15 @@ pub(crate) const INDENT: &str = "    ";
 // ── Error type ──────────────────────────────────────────────────────────────
 
 /// Errors that can occur during SQL formatting.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum FormatError {
     /// The SQL could not be parsed by `pg_query`.
+    #[error("parse error: {0}")]
     Parse(String),
     /// A parsed AST node could not be deparsed back to SQL text.
+    #[error("deparse error: {0}")]
     Deparse(String),
 }
-
-impl fmt::Display for FormatError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            FormatError::Parse(msg) => write!(f, "parse error: {msg}"),
-            FormatError::Deparse(msg) => write!(f, "deparse error: {msg}"),
-        }
-    }
-}
-
-impl std::error::Error for FormatError {}
 
 // ── Public API ──────────────────────────────────────────────────────────────
 

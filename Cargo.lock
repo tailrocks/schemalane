@@ -1854,6 +1854,7 @@ version = "0.1.3"
 dependencies = [
  "owo-colors",
  "pg_query",
+ "thiserror 2.0.18",
 ]
 
 [[package]]

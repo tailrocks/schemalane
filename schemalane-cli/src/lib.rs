@@ -836,16 +836,16 @@ fn delegation_command_parts(
 // ── Database connection ─────────────────────────────────────────────────────
 
 fn create_pool(database_url: &str) -> Result<Pool, SchemalaneError> {
-    let pg_config: tokio_postgres::Config = database_url.parse().map_err(|err| {
-        SchemalaneError::Validation(format!("failed to parse database URL: {err}"))
-    })?;
+    let pg_config: tokio_postgres::Config = database_url
+        .parse()
+        .map_err(|err| SchemalaneError::Config(format!("failed to parse database URL: {err}")))?;
 
     let manager_config = ManagerConfig {
         recycling_method: RecyclingMethod::Fast,
     };
     let mgr = if wants_tls(&pg_config) {
         let tls_config = rustls::ClientConfig::with_platform_verifier().map_err(|err| {
-            SchemalaneError::Validation(format!("failed to configure TLS verifier: {err}"))
+            SchemalaneError::Config(format!("failed to configure TLS verifier: {err}"))
         })?;
         let tls = tokio_postgres_rustls::MakeRustlsConnect::new(tls_config);
         deadpool_postgres::Manager::from_config(pg_config, tls, manager_config)
@@ -853,9 +853,10 @@ fn create_pool(database_url: &str) -> Result<Pool, SchemalaneError> {
         deadpool_postgres::Manager::from_config(pg_config, NoTls, manager_config)
     };
 
-    Pool::builder(mgr).max_size(5).build().map_err(|err| {
-        SchemalaneError::Validation(format!("failed to build connection pool: {err}"))
-    })
+    Pool::builder(mgr)
+        .max_size(5)
+        .build()
+        .map_err(|err| SchemalaneError::Config(format!("failed to build connection pool: {err}")))
 }
 
 fn wants_tls(config: &tokio_postgres::Config) -> bool {
@@ -1000,7 +1001,7 @@ async fn run_db_command(
                 StatusFormat::Json => println!(
                     "{}",
                     serde_json::to_string_pretty(&report).map_err(|err| {
-                        SchemalaneError::Validation(format!("failed to encode JSON: {err}"))
+                        SchemalaneError::Internal(format!("failed to encode JSON: {err}"))
                     })?
                 ),
             }

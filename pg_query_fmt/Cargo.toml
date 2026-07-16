@@ -21,3 +21,4 @@ path = "src/lib.rs"
 [dependencies]
 owo-colors = { workspace = true }
 pg_query = { workspace = true }
+thiserror = { workspace = true }

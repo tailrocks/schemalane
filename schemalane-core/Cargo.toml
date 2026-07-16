@@ -26,7 +26,7 @@ schemalane-version = { workspace = true }
 serde = { version = "1.0.228", features = ["derive"] }
 pg_query = { workspace = true }
 pg_query_fmt = { workspace = true }
-thiserror = "2.0.18"
+thiserror = { workspace = true }
 tokio-postgres = { workspace = true }
 
 [dev-dependencies]

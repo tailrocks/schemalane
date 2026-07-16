@@ -47,7 +47,7 @@ Wave B — hardening & structure prerequisites:
 | 024 | Macro success-path codegen tests (fixture crate) | P2 | M | — | DONE |
 | 025 | One shared Flyway version parser (`schemalane-version`) | P2 | M | 023 | DONE |
 | 026 | `#[non_exhaustive]` + delete dead public API | P2 | S | after 002/003/014/020/021/022 | DONE — package verification remains under 015's crates.io bootstrap blocker |
-| 027 | Error taxonomy: split `Validation` junk drawer | P3 | M | 026, 023 | TODO |
+| 027 | Error taxonomy: split `Validation` junk drawer | P3 | M | 026, 023 | DONE |
 
 Wave C — structure & docs depth:
 
