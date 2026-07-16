@@ -3,7 +3,7 @@ use deadpool_postgres::Pool;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::Path;
 use std::time::Instant;
-use tokio_postgres::{Client, Transaction};
+use tokio_postgres::Client;
 
 use crate::discovery::{DiscoveredMigration, MigrationSource, MigrationType};
 use crate::filename::{ParsedVersion, parse_rust_filename, parse_sql_filename};
@@ -21,19 +21,16 @@ pub fn derive_advisory_lock_id(schema: &str, history_table: &str) -> i64 {
 }
 
 use crate::checksum::calculate_checksum;
+use crate::execute::{Applied, execute_rust_migration, execute_sql_migration, millis_i32};
 use crate::history::latest_history_by_script;
 use crate::history::{HistoryRepository, HistoryRow, HistoryWrite};
 use crate::ident::quote_ident;
 use crate::report::build_status_report;
-use crate::sql_analysis::{
-    ParsedSqlStatement, SqlTransactionMode, parse_sql_migration, resolve_sql_transaction_mode,
-};
 use crate::{SchemalaneConfig, SchemalaneError};
 
 use crate::{
-    AppliedMigration, MigrationFailed, MigrationFinished, MigrationInfo, MigrationObserver,
-    MigrationStarted, NoopMigrationObserver, RunReport, SqlStatementFailed, SqlStatementFinished,
-    SqlStatementStarted, StatusReport,
+    AppliedMigration, MigrationFailed, MigrationFinished, MigrationObserver, MigrationStarted,
+    NoopMigrationObserver, RunReport, StatusReport,
 };
 
 #[cfg(test)]
@@ -50,7 +47,7 @@ fn normalize_script_key(script: String) -> String {
         .unwrap_or(script)
 }
 
-use crate::{RustMigrationExecutor, RustTransactionMode};
+use crate::RustMigrationExecutor;
 
 pub struct SchemalaneMigrator {
     config: SchemalaneConfig,
@@ -631,166 +628,6 @@ impl SchemalaneMigrator {
     }
 }
 
-async fn execute_sql_migration<O>(
-    client: &mut Client,
-    sql: &str,
-    migration: &MigrationInfo,
-    observer: &O,
-    history_write: &HistoryWrite<'_>,
-) -> Result<Applied, SchemalaneError>
-where
-    O: MigrationObserver + ?Sized,
-{
-    let started = Instant::now();
-    let statements = parse_sql_migration(sql)?;
-    let total_statements = statements.len();
-
-    let tx_mode = resolve_sql_transaction_mode(&statements, &migration.script)?;
-
-    match tx_mode {
-        SqlTransactionMode::Transactional => {
-            let txn = client.transaction().await?;
-            for (index, stmt) in statements.iter().enumerate() {
-                if let Err(err) =
-                    execute_statement(&txn, stmt, index, total_statements, migration, observer)
-                        .await
-                {
-                    let _ = txn.rollback().await;
-                    return Err(SchemalaneError::Db(err));
-                }
-            }
-            history_write
-                .repository
-                .insert_transaction(
-                    &txn,
-                    history_write,
-                    millis_i32(started.elapsed().as_millis()),
-                )
-                .await?;
-            txn.commit().await?;
-            Ok(Applied::HistoryRecorded)
-        }
-        SqlTransactionMode::NonTransactional => {
-            for (index, stmt) in statements.iter().enumerate() {
-                execute_statement(client, stmt, index, total_statements, migration, observer)
-                    .await
-                    .map_err(SchemalaneError::Db)?;
-            }
-            Ok(Applied::NeedsHistoryRow)
-        }
-    }
-}
-
-trait BatchExec {
-    async fn batch(&self, sql: &str) -> Result<(), tokio_postgres::Error>;
-}
-
-impl BatchExec for Client {
-    async fn batch(&self, sql: &str) -> Result<(), tokio_postgres::Error> {
-        self.batch_execute(sql).await
-    }
-}
-
-impl BatchExec for Transaction<'_> {
-    async fn batch(&self, sql: &str) -> Result<(), tokio_postgres::Error> {
-        self.batch_execute(sql).await
-    }
-}
-
-/// Executes one SQL statement and emits its observer lifecycle.
-async fn execute_statement<E, O>(
-    executor: &E,
-    stmt: &ParsedSqlStatement,
-    index: usize,
-    total_statements: usize,
-    migration: &MigrationInfo,
-    observer: &O,
-) -> Result<(), tokio_postgres::Error>
-where
-    E: BatchExec,
-    O: MigrationObserver + ?Sized,
-{
-    let source_line = Some(stmt.source_line);
-
-    observer.on_sql_statement_start(&SqlStatementStarted {
-        migration: migration.clone(),
-        statement_index: index + 1,
-        total_statements,
-        statement_preview: stmt.preview.clone(),
-        statement: stmt.sql.clone(),
-        source_line,
-    });
-
-    let started = Instant::now();
-    match executor.batch(&stmt.sql).await {
-        Ok(()) => {
-            observer.on_sql_statement_finish(&SqlStatementFinished {
-                migration: migration.clone(),
-                statement_index: index + 1,
-                total_statements,
-                statement_preview: stmt.preview.clone(),
-                statement: stmt.sql.clone(),
-                execution_time_ms: millis_i32(started.elapsed().as_millis()),
-                source_line,
-            });
-            Ok(())
-        }
-        Err(err) => {
-            observer.on_sql_statement_failed(&SqlStatementFailed {
-                migration: migration.clone(),
-                statement_index: index + 1,
-                total_statements,
-                statement_preview: stmt.preview.clone(),
-                statement: stmt.sql.clone(),
-                execution_time_ms: millis_i32(started.elapsed().as_millis()),
-                error: err.to_string(),
-                source_line,
-            });
-            Err(err)
-        }
-    }
-}
-
-/// Rust migrations use raw BEGIN/COMMIT because their public executor future borrows `&Client`;
-/// the typed transaction API requires `&mut Client` for the same lifetime. Best-effort rollback
-/// is deliberate: if it fails, dropping the detached session aborts the transaction server-side.
-async fn execute_rust_migration(
-    client: &mut Client,
-    migration: &RustMigrationExecutor,
-) -> Result<(), tokio_postgres::Error> {
-    match migration.transaction_mode() {
-        RustTransactionMode::NoTransaction => migration.up(client).await,
-        RustTransactionMode::Transaction => {
-            client.batch_execute("BEGIN").await?;
-            match migration.up(client).await {
-                Ok(()) => client.batch_execute("COMMIT").await,
-                Err(err) => {
-                    let _ = client.batch_execute("ROLLBACK").await;
-                    Err(err)
-                }
-            }
-        }
-    }
-}
-
-#[expect(
-    clippy::cast_possible_truncation,
-    reason = "guarded by the preceding bounds check"
-)]
-const fn millis_i32(millis: u128) -> i32 {
-    if millis > i32::MAX as u128 {
-        i32::MAX
-    } else {
-        millis as i32
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Applied {
-    HistoryRecorded,
-    NeedsHistoryRow,
-}
-
 #[derive(Debug, Clone, Copy)]
 struct ApplyOptions {
     skip_applied: bool,
@@ -806,13 +643,14 @@ pub const fn should_fail_on_pending(report: &StatusReport) -> Result<(), Schemal
 
 #[cfg(test)]
 mod tests {
-    use crate::sql_analysis::is_non_transactional;
+    use crate::sql_analysis::{
+        SqlTransactionMode, is_non_transactional, parse_sql_migration, resolve_sql_transaction_mode,
+    };
 
     use super::{
         DiscoveredMigration, HistoryRow, MigrationSource, MigrationState, MigrationType,
-        SchemalaneConfig, SchemalaneError, SchemalaneMigrator, SqlTransactionMode,
-        build_status_report, calculate_checksum, derive_advisory_lock_id, init_migration_project,
-        parse_sql_filename, parse_sql_migration, resolve_sql_transaction_mode,
+        SchemalaneConfig, SchemalaneError, SchemalaneMigrator, build_status_report,
+        calculate_checksum, derive_advisory_lock_id, init_migration_project, parse_sql_filename,
     };
     use std::fs;
     use std::path::PathBuf;

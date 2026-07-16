@@ -4,6 +4,7 @@ mod checksum;
 mod config;
 mod discovery;
 mod error;
+mod execute;
 mod filename;
 mod history;
 mod ident;
