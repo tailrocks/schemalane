@@ -86,6 +86,40 @@ CREATE TABLE price_histories (
 
 #[test]
 #[ignore = "requires Docker daemon"]
+fn status_sees_history_in_mixed_case_schema() -> Result<(), Box<dyn Error + 'static>> {
+    let node = Postgres::default().start()?;
+    let db_url = connection_string(&node)?;
+    let temp = TempDir::new()?;
+    let migrations_dir = temp.path().join("migrations");
+    fs::create_dir_all(&migrations_dir)?;
+    write_migration(
+        &migrations_dir,
+        "V1__create_cake.sql",
+        "CREATE TABLE cake (id SERIAL PRIMARY KEY);",
+    )?;
+
+    let runtime = tokio::runtime::Runtime::new()?;
+    runtime.block_on(async move {
+        let pool = create_pool(&db_url)?;
+        let migrator = SchemalaneMigrator::new(SchemalaneConfig {
+            schema: "MyApp".to_owned(),
+            migrations_dir,
+            ..Default::default()
+        });
+
+        assert_eq!(migrator.up(&pool).await?.applied.len(), 1);
+        let status = migrator.status(&pool).await?;
+        assert_eq!(status.summary.success, 1);
+        assert_eq!(status.summary.pending, 0);
+
+        Ok::<(), Box<dyn Error + 'static>>(())
+    })?;
+
+    Ok(())
+}
+
+#[test]
+#[ignore = "requires Docker daemon"]
 fn fresh_recreates_schema() -> Result<(), Box<dyn Error + 'static>> {
     let node = Postgres::default().start()?;
     let db_url = connection_string(&node)?;

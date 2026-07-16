@@ -963,7 +963,7 @@ CREATE INDEX IF NOT EXISTS {success_idx} ON {table} (\"success\");",
     }
 
     async fn history_table_exists(&self, client: &Client) -> Result<bool, SchemalaneError> {
-        let regclass = format!("{}.{}", self.config.schema, self.config.history_table);
+        let regclass = qualified_table(&self.config.schema, &self.config.history_table);
         let row = client
             .query_one("SELECT to_regclass($1) IS NOT NULL AS exists", &[&regclass])
             .await?;
