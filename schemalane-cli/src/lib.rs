@@ -4,6 +4,7 @@ mod args;
 mod commands;
 mod connect;
 mod delegate;
+mod dispatch;
 mod observer;
 mod prompt;
 mod render;
