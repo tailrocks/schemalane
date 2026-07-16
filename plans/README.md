@@ -23,7 +23,7 @@ Wave A — critical fixes (mostly independent; 001 first):
 | 005 | Semantic duplicate-version detection | P1 | S | — | DONE |
 | 006 | Quote identifiers in `to_regclass` probe | P1 | S | 001 | DONE |
 | 007 | DATABASE_URL to children via env, not argv | P1 | S | — | DONE |
-| 008 | `init` scaffold defaults to crates.io (kill kellnr) | P1 | S | — | BLOCKED — `schemalane-cli` is not published on crates.io; release required |
+| 008 | `init` scaffold defaults to crates.io (kill kellnr) | P1 | S | — | DONE — template/tests complete; live registry resolution deferred until a future public release |
 | 009 | README + spec match the shipped CLI surface | P1 | S | — | DONE |
 | 010 | Checksum golden-value tests (Flyway promise) | P1 | S | — | DONE |
 | 011 | Small bug quartet: UTF-8 truncate panic, EOF loop, masked errors, line numbers | P2 | S | — | DONE |
@@ -35,7 +35,7 @@ Wave B — hardening & structure prerequisites:
 | Plan | Title | Priority | Effort | Depends on | Status |
 |------|-------|----------|--------|------------|--------|
 | 014 | Advisory-lock key scoped to (schema, table) + flag | P2 | S | — | DONE |
-| 015 | Release pipeline: idempotent publish, SHA pins, cargo-audit | P2 | M | — | BLOCKED — dependent package verification needs first crates.io release |
+| 015 | Release pipeline: idempotent publish, SHA pins, cargo-audit | P2 | M | — | DONE — pipeline/package checks complete; first live release intentionally deferred |
 | 016 | Workspace manifest hygiene (shared deps, MSRV, pins) | P2 | S-M | — | DONE |
 | 017 | CLAUDE.md contributor/agent guide | P2 | S | — | DONE |
 | 018 | up-path perf: history map, rank counter, single-pass IO | P2 | S | 001 | DONE |
@@ -46,7 +46,7 @@ Wave B — hardening & structure prerequisites:
 | 023 | CLI contract tests: exit codes, JSON shape, delegation, env | P2 | M | (003, 007 help) | DONE |
 | 024 | Macro success-path codegen tests (fixture crate) | P2 | M | — | DONE |
 | 025 | One shared Flyway version parser (`schemalane-version`) | P2 | M | 023 | DONE |
-| 026 | `#[non_exhaustive]` + delete dead public API | P2 | S | after 002/003/014/020/021/022 | DONE — package verification remains under 015's crates.io bootstrap blocker |
+| 026 | `#[non_exhaustive]` + delete dead public API | P2 | S | after 002/003/014/020/021/022 | DONE — live dependent-package verification deferred until first public release |
 | 027 | Error taxonomy: split `Validation` junk drawer | P3 | M | 026, 023 | DONE |
 
 Wave C — structure & docs depth:
@@ -56,10 +56,10 @@ Wave C — structure & docs depth:
 | 028 | Engine dedup: one apply loop, one statement executor | P3 | M | 019, 020, 021 | DONE |
 | 029 | CLI dedup: one command enum, flattened shared args | P3 | M | 023 | DONE |
 | 030 | HistoryRepository seam (all history SQL in one place) | P3 | M | 006, 020, 021 | DONE |
-| 031 | Core module split (2264-line lib.rs → modules) | P3 | L | all core plans above | DONE — package verification remains under 015's crates.io bootstrap blocker |
+| 031 | Core module split (2264-line lib.rs → modules) | P3 | L | all core plans above | DONE — live dependent-package verification deferred until first public release |
 | 032 | CLI module split (1431-line lib.rs → modules) | P3 | L | 022, 029, 023 | DONE |
 | 033 | Formatter split + shared table-body emitter | P3 | M | — | DONE |
-| 034 | Core sheds pg_query_fmt dep (previews move to CLI) | P3 | M | 026, (022) | DONE — package verification remains under 015's crates.io bootstrap blocker |
+| 034 | Core sheds pg_query_fmt dep (previews move to CLI) | P3 | M | 026, (022) | DONE — live dependent-package verification deferred until first public release |
 | 035 | Formatter fidelity: quoting, parens, dropped clauses, round-trip harness | P3 | M | 033 | DONE |
 | 036 | Docs depth: spec §10/§4.2 rewrite, rustdoc, pg_query_fmt README | P3 | M | 009, 026, 027 | DONE |
 
@@ -74,6 +74,15 @@ Wave D — direction spikes (design/investigate, maintainer sign-off before buil
 | 041 | Spike: out-of-order semantics investigation | P3 | S | 001 | DONE |
 
 Status values: TODO | IN PROGRESS | DONE | BLOCKED (one-line reason) | REJECTED (one-line rationale).
+
+## Publication decision
+
+Schemalane is source-only on GitHub while it remains work in progress. Do not
+publish any workspace crate to crates.io yet. The crates.io-facing scaffold and
+release pipeline are prepared for a future public release, but checks that
+require already-published dependent crates are deliberately deferred until that
+release is authorized. This is a product decision, not an implementation
+blocker.
 
 ## Dependency notes
 
