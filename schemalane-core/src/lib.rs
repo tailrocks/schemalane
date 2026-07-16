@@ -1870,11 +1870,14 @@ pub fn migrations_dir_exists(path: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
+        DiscoveredMigration, HistoryRow, MigrationSource, MigrationState, MigrationType,
         SchemalaneConfig, SchemalaneError, SchemalaneMigrator, SqlTransactionMode,
-        calculate_checksum, derive_advisory_lock_id, init_migration_project, is_non_transactional,
-        parse_sql_migration, resolve_sql_transaction_mode,
+        build_status_report, calculate_checksum, derive_advisory_lock_id, init_migration_project,
+        is_non_transactional, parse_sql_filename, parse_sql_migration,
+        resolve_sql_transaction_mode,
     };
     use std::fs;
+    use std::path::PathBuf;
     use tempfile::TempDir;
 
     #[test]
@@ -1900,6 +1903,189 @@ mod tests {
             derive_advisory_lock_id("ab", "c"),
             derive_advisory_lock_id("a", "bc")
         );
+    }
+
+    fn discovered(script: &str, checksum: Option<i32>) -> DiscoveredMigration {
+        let (version_text, version, description) = parse_sql_filename(script).expect("filename");
+        DiscoveredMigration {
+            version,
+            version_text,
+            description_display: description.replace('_', " "),
+            script: script.to_owned(),
+            checksum,
+            migration_type: MigrationType::Sql,
+            source: MigrationSource::SqlFile {
+                path: PathBuf::from(script),
+                content: String::new(),
+            },
+        }
+    }
+
+    fn history_row(script: &str, rank: i32, success: bool, checksum: Option<i32>) -> HistoryRow {
+        let (version, _, description) = parse_sql_filename(script).expect("filename");
+        HistoryRow {
+            installed_rank: rank,
+            version: Some(version),
+            description: description.replace('_', " "),
+            migration_type: "SQL".to_owned(),
+            script: script.to_owned(),
+            checksum,
+            installed_on: "now".to_owned(),
+            execution_time: 1,
+            success,
+        }
+    }
+
+    fn state_report(
+        migrations: &[DiscoveredMigration],
+        history: &[HistoryRow],
+    ) -> super::StatusReport {
+        build_status_report("public", "flyway_schema_history", migrations, history)
+    }
+
+    #[test]
+    fn status_classifies_success() {
+        let report = state_report(
+            &[discovered("V1__a.sql", Some(1))],
+            &[history_row("V1__a.sql", 1, true, Some(1))],
+        );
+        assert_eq!(report.migrations[0].state, MigrationState::Success);
+        assert_eq!(report.summary.success, 1);
+    }
+
+    #[test]
+    fn status_classifies_pending() {
+        let report = state_report(&[discovered("V2__b.sql", Some(2))], &[]);
+        assert_eq!(report.migrations[0].state, MigrationState::Pending);
+        assert_eq!(report.migrations[0].installed_rank, None);
+        assert_eq!(report.summary.pending, 1);
+    }
+
+    #[test]
+    fn status_failed_precedes_checksum_comparison() {
+        let report = state_report(
+            &[discovered("V1__a.sql", Some(1))],
+            &[history_row("V1__a.sql", 1, false, Some(1))],
+        );
+        assert_eq!(report.migrations[0].state, MigrationState::Failed);
+        assert_eq!(report.summary.failed, 1);
+        assert_eq!(report.summary.checksum_mismatch, 0);
+    }
+
+    #[test]
+    fn status_classifies_checksum_mismatch() {
+        let report = state_report(
+            &[discovered("V1__a.sql", Some(2))],
+            &[history_row("V1__a.sql", 1, true, Some(1))],
+        );
+        assert_eq!(report.migrations[0].state, MigrationState::ChecksumMismatch);
+        assert_eq!(report.summary.checksum_mismatch, 1);
+    }
+
+    #[test]
+    fn status_classifies_missing() {
+        let report = state_report(&[], &[history_row("V1__gone.sql", 1, true, Some(1))]);
+        assert_eq!(report.migrations[0].state, MigrationState::Missing);
+        assert_eq!(report.migrations[0].script, "V1__gone.sql");
+        assert_eq!(report.summary.missing, 1);
+    }
+
+    #[test]
+    fn status_latest_retry_wins() {
+        let rows = [
+            history_row("V1__a.sql", 1, false, Some(1)),
+            history_row("V1__a.sql", 2, true, Some(1)),
+        ];
+        let report = state_report(&[discovered("V1__a.sql", Some(1))], &rows);
+        assert_eq!(report.migrations[0].state, MigrationState::Success);
+        assert_eq!(report.migrations[0].installed_rank, Some(2));
+        assert_eq!(report.summary.success, 1);
+    }
+
+    #[test]
+    fn status_orders_parsed_versions_with_missing_interleaved() {
+        let migrations = [
+            discovered("V10__ten.sql", Some(10)),
+            discovered("V2__two.sql", Some(2)),
+        ];
+        let history = [history_row("V5__missing.sql", 1, true, Some(5))];
+        let report = state_report(&migrations, &history);
+        assert_eq!(
+            report
+                .migrations
+                .iter()
+                .map(|entry| entry.script.as_str())
+                .collect::<Vec<_>>(),
+            ["V2__two.sql", "V5__missing.sql", "V10__ten.sql"]
+        );
+        assert_eq!(report.summary.pending, 2);
+        assert_eq!(report.summary.missing, 1);
+    }
+
+    #[test]
+    fn gating_allows_clean_history() {
+        assert!(
+            SchemalaneMigrator::ensure_no_blocking_history(
+                &[discovered("V1__a.sql", Some(1))],
+                &[history_row("V1__a.sql", 1, true, Some(1))]
+            )
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn gating_rejects_failed_history_with_exit_four() {
+        let err = SchemalaneMigrator::ensure_no_blocking_history(
+            &[discovered("V1__a.sql", Some(1))],
+            &[history_row("V1__a.sql", 1, false, Some(1))],
+        )
+        .expect_err("failed");
+        assert!(matches!(err, SchemalaneError::FailedHistory(_)));
+        assert_eq!(err.exit_code(), 4);
+    }
+
+    #[test]
+    fn gating_rejects_missing_local_with_exit_three() {
+        let err = SchemalaneMigrator::ensure_no_blocking_history(
+            &[],
+            &[history_row("V1__a.sql", 1, true, Some(1))],
+        )
+        .expect_err("drift");
+        assert!(matches!(err, SchemalaneError::Drift(_)));
+        assert_eq!(err.exit_code(), 3);
+    }
+
+    #[test]
+    fn gating_rejects_checksum_mismatch_with_exit_three() {
+        let err = SchemalaneMigrator::ensure_no_blocking_history(
+            &[discovered("V1__a.sql", Some(2))],
+            &[history_row("V1__a.sql", 1, true, Some(1))],
+        )
+        .expect_err("drift");
+        assert!(matches!(err, SchemalaneError::Drift(_)));
+        assert_eq!(err.exit_code(), 3);
+    }
+
+    #[test]
+    fn gating_failed_history_precedes_drift() {
+        let migrations = [discovered("V1__a.sql", Some(2))];
+        let history = [
+            history_row("V1__a.sql", 1, false, Some(1)),
+            history_row("V2__gone.sql", 2, true, Some(2)),
+        ];
+        let err = SchemalaneMigrator::ensure_no_blocking_history(&migrations, &history)
+            .expect_err("blocked");
+        assert!(matches!(err, SchemalaneError::FailedHistory(_)));
+    }
+
+    #[test]
+    fn gating_latest_success_clears_prior_failure() {
+        let migrations = [discovered("V1__a.sql", Some(1))];
+        let history = [
+            history_row("V1__a.sql", 1, false, Some(1)),
+            history_row("V1__a.sql", 2, true, Some(1)),
+        ];
+        assert!(SchemalaneMigrator::ensure_no_blocking_history(&migrations, &history).is_ok());
     }
 
     // Golden values independently computed with Python's zlib.crc32 from spec §6.3.

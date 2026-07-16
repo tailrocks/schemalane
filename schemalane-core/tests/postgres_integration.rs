@@ -556,6 +556,203 @@ fn connection_string(
     ))
 }
 
+#[test]
+#[ignore = "requires Docker daemon"]
+fn sql_migration_failure_rolls_back_and_records_failed_row() -> Result<(), Box<dyn Error + 'static>>
+{
+    let node = Postgres::default().start()?;
+    let db_url = connection_string(&node)?;
+    let temp = TempDir::new()?;
+    let migrations_dir = temp.path().join("migrations");
+    fs::create_dir_all(&migrations_dir)?;
+    write_migration(
+        &migrations_dir,
+        "V1__fail.sql",
+        "CREATE TABLE roll_a (id int); SELECT * FROM missing_table_xyz;",
+    )?;
+    tokio::runtime::Runtime::new()?.block_on(async move {
+        let pool = create_pool(&db_url)?;
+        let migrator = SchemalaneMigrator::new(SchemalaneConfig { migrations_dir, ..Default::default() });
+        assert!(matches!(migrator.up(&pool).await, Err(SchemalaneError::MigrationExecution { .. })));
+        assert!(!table_exists(&pool, "roll_a").await?);
+        let client = pool.get().await?;
+        let row = client.query_one("SELECT COUNT(*) AS count, bool_and(NOT \"success\") AS failed FROM public.flyway_schema_history", &[]).await?;
+        assert_eq!(row.get::<_, i64>("count"), 1);
+        assert!(row.get::<_, bool>("failed"));
+        Ok::<(), Box<dyn Error + 'static>>(())
+    })?;
+    Ok(())
+}
+
+#[test]
+#[ignore = "requires Docker daemon"]
+fn failed_history_blocks_next_up_until_fixed() -> Result<(), Box<dyn Error + 'static>> {
+    let node = Postgres::default().start()?;
+    let db_url = connection_string(&node)?;
+    let temp = TempDir::new()?;
+    let migrations_dir = temp.path().join("migrations");
+    fs::create_dir_all(&migrations_dir)?;
+    write_migration(
+        &migrations_dir,
+        "V1__fail.sql",
+        "SELECT * FROM missing_table_xyz;",
+    )?;
+    tokio::runtime::Runtime::new()?.block_on(async move {
+        let pool = create_pool(&db_url)?;
+        let migrator = SchemalaneMigrator::new(SchemalaneConfig {
+            migrations_dir,
+            ..Default::default()
+        });
+        assert!(matches!(
+            migrator.up(&pool).await,
+            Err(SchemalaneError::MigrationExecution { .. })
+        ));
+        let err = migrator
+            .up(&pool)
+            .await
+            .expect_err("failed history must block");
+        assert!(matches!(err, SchemalaneError::FailedHistory(_)));
+        assert_eq!(err.exit_code(), 4);
+        Ok::<(), Box<dyn Error + 'static>>(())
+    })?;
+    Ok(())
+}
+
+#[test]
+#[ignore = "requires Docker daemon"]
+fn mixed_statements_records_no_history_row() -> Result<(), Box<dyn Error + 'static>> {
+    let node = Postgres::default().start()?;
+    let db_url = connection_string(&node)?;
+    let temp = TempDir::new()?;
+    let migrations_dir = temp.path().join("migrations");
+    fs::create_dir_all(&migrations_dir)?;
+    write_migration(
+        &migrations_dir,
+        "V1__mixed.sql",
+        "CREATE TABLE t (id int); CREATE INDEX CONCURRENTLY i ON t (id);",
+    )?;
+    tokio::runtime::Runtime::new()?.block_on(async move {
+        let pool = create_pool(&db_url)?;
+        let migrator = SchemalaneMigrator::new(SchemalaneConfig {
+            migrations_dir,
+            ..Default::default()
+        });
+        assert!(matches!(
+            migrator.up(&pool).await,
+            Err(SchemalaneError::MixedStatements { .. })
+        ));
+        assert_eq!(
+            scalar_i64(
+                &pool,
+                "SELECT COUNT(*) AS count FROM public.flyway_schema_history"
+            )
+            .await?,
+            0
+        );
+        Ok::<(), Box<dyn Error + 'static>>(())
+    })?;
+    Ok(())
+}
+
+#[test]
+#[ignore = "requires Docker daemon"]
+fn non_transactional_sql_executes_outside_txn() -> Result<(), Box<dyn Error + 'static>> {
+    let node = Postgres::default().start()?;
+    let db_url = connection_string(&node)?;
+    let temp = TempDir::new()?;
+    let migrations_dir = temp.path().join("migrations");
+    fs::create_dir_all(&migrations_dir)?;
+    write_migration(&migrations_dir, "V1__t.sql", "CREATE TABLE t (id int);")?;
+    write_migration(
+        &migrations_dir,
+        "V2__idx.sql",
+        "CREATE INDEX CONCURRENTLY idx_t ON t (id);",
+    )?;
+    tokio::runtime::Runtime::new()?.block_on(async move {
+        let pool = create_pool(&db_url)?;
+        let migrator = SchemalaneMigrator::new(SchemalaneConfig {
+            migrations_dir,
+            ..Default::default()
+        });
+        assert_eq!(migrator.up(&pool).await?.applied.len(), 2);
+        assert!(table_exists(&pool, "idx_t").await?);
+        assert_eq!(
+            scalar_i64(
+                &pool,
+                "SELECT COUNT(*) AS count FROM public.flyway_schema_history WHERE \"success\""
+            )
+            .await?,
+            2
+        );
+        Ok::<(), Box<dyn Error + 'static>>(())
+    })?;
+    Ok(())
+}
+
+#[test]
+#[ignore = "requires Docker daemon"]
+fn up_blocks_while_lock_held() -> Result<(), Box<dyn Error + 'static>> {
+    let node = Postgres::default().start()?;
+    let db_url = connection_string(&node)?;
+    let temp = TempDir::new()?;
+    let migrations_dir = temp.path().join("migrations");
+    fs::create_dir_all(&migrations_dir)?;
+    write_migration(&migrations_dir, "V1__t.sql", "CREATE TABLE t (id int);")?;
+    tokio::runtime::Runtime::new()?.block_on(async move {
+        let pool = create_pool(&db_url)?;
+        let holder = pool.get().await?;
+        let key = derive_advisory_lock_id("public", "flyway_schema_history");
+        holder
+            .execute("SELECT pg_advisory_lock($1)", &[&key])
+            .await?;
+        let migrator = SchemalaneMigrator::new(SchemalaneConfig {
+            migrations_dir,
+            ..Default::default()
+        });
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_secs(2), migrator.up(&pool))
+                .await
+                .is_err()
+        );
+        holder
+            .execute("SELECT pg_advisory_unlock($1)", &[&key])
+            .await?;
+        assert_eq!(migrator.up(&pool).await?.applied.len(), 1);
+        Ok::<(), Box<dyn Error + 'static>>(())
+    })?;
+    Ok(())
+}
+
+#[test]
+#[ignore = "requires Docker daemon"]
+fn lock_released_after_successful_up() -> Result<(), Box<dyn Error + 'static>> {
+    let node = Postgres::default().start()?;
+    let db_url = connection_string(&node)?;
+    let temp = TempDir::new()?;
+    let migrations_dir = temp.path().join("migrations");
+    fs::create_dir_all(&migrations_dir)?;
+    write_migration(&migrations_dir, "V1__t.sql", "CREATE TABLE t (id int);")?;
+    tokio::runtime::Runtime::new()?.block_on(async move {
+        let pool = create_pool(&db_url)?;
+        let migrator = SchemalaneMigrator::new(SchemalaneConfig {
+            migrations_dir,
+            ..Default::default()
+        });
+        migrator.up(&pool).await?;
+        let client = pool.get().await?;
+        let key = derive_advisory_lock_id("public", "flyway_schema_history");
+        let row = client
+            .query_one("SELECT pg_try_advisory_lock($1) AS acquired", &[&key])
+            .await?;
+        assert!(row.get::<_, bool>("acquired"));
+        client
+            .execute("SELECT pg_advisory_unlock($1)", &[&key])
+            .await?;
+        Ok::<(), Box<dyn Error + 'static>>(())
+    })?;
+    Ok(())
+}
+
 fn create_pool(db_url: &str) -> Result<Pool, Box<dyn Error + 'static>> {
     let pg_config: tokio_postgres::Config = db_url.parse()?;
     let mgr = deadpool_postgres::Manager::from_config(
