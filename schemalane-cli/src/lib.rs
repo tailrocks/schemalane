@@ -3,6 +3,8 @@
 mod args;
 mod connect;
 mod prompt;
+mod render;
 mod runner;
 
-pub use runner::{EmbeddedRunner, Verbosity, run_cli, run_cli_with};
+pub use render::Verbosity;
+pub use runner::{EmbeddedRunner, run_cli, run_cli_with};

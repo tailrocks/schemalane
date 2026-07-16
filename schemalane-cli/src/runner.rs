@@ -1,6 +1,6 @@
 #![allow(clippy::print_stdout, clippy::print_stderr, clippy::future_not_send)]
 
-use clap::{Parser, ValueEnum};
+use clap::Parser;
 use comfy_table::{Attribute, Cell, CellAlignment, Color, ContentArrangement, Table, presets};
 use deadpool_postgres::Pool;
 use owo_colors::{OwoColorize, Stream, Style};
@@ -27,56 +27,12 @@ use crate::connect::{create_pool, format_postgres_target};
 #[cfg(test)]
 use crate::connect::{parse_postgres_target, wants_tls};
 
-// ── Verbosity ───────────────────────────────────────────────────────────────
-
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
-pub enum Verbosity {
-    /// Migration file names only.
-    #[default]
-    Minimal,
-    /// Summarized operations (e.g. CREATE TABLE name).
-    Compact,
-    /// Full SQL queries.
-    Detailed,
-}
-
 use pg_query_fmt::highlight::highlight_sql_line;
 
-// ── Formatting helpers ──────────────────────────────────────────────────────
-
-const INDENT: &str = " ";
-const MAX_PREVIEW_WIDTH: usize = 60;
-const STATUS_WIDTH: usize = 7; // "SUCCESS".len() == "FAILED ".len()
-
-/// Remove terminal control characters from file-derived text.
-fn sanitize_terminal(text: &str) -> String {
-    text.chars()
-        .filter(|c| !c.is_control() || *c == '\n' || *c == '\t')
-        .collect()
-}
-
-fn pad_index(index: usize, total: usize) -> String {
-    let width = total.to_string().len().max(2);
-    format!("{index:0>width$}")
-}
-
-fn format_elapsed(ms: i32) -> String {
-    if ms >= 1000 {
-        let secs = f64::from(ms) / 1000.0;
-        format!("{secs:.1} s")
-    } else {
-        format!("{ms} ms")
-    }
-}
-
-fn truncate_preview(s: &str, max_width: usize) -> String {
-    debug_assert!(max_width >= 3, "truncate_preview needs room for ellipsis");
-    if s.chars().count() <= max_width {
-        return s.to_owned();
-    }
-    let truncated: String = s.chars().take(max_width.saturating_sub(3)).collect();
-    format!("{truncated}...")
-}
+use crate::render::{
+    INDENT, MAX_PREVIEW_WIDTH, STATUS_WIDTH, Verbosity, format_elapsed, pad_index,
+    sanitize_terminal, truncate_preview,
+};
 
 use crate::prompt::prompt_yes_no;
 
