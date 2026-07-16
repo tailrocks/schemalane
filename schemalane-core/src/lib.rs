@@ -521,11 +521,12 @@ impl SchemalaneMigrator {
         let (mut session, lock_id) = self.acquire_locked_session(pool).await?;
         let result = async {
             let client: &mut Client = &mut session;
+            let history_repository = self.history_repository();
             self.ensure_target_schema(client).await?;
             self.set_search_path(client).await?;
-            self.ensure_history_table(client).await?;
+            history_repository.ensure_table(client).await?;
             let installed_by = self.resolve_installed_by(client).await?;
-            let history = self.load_history(client).await?;
+            let history = history_repository.load(client).await?;
             Self::ensure_no_blocking_history(&migrations, &history)?;
             observer.on_run_planned(&build_status_report(
                 &self.config.schema,
@@ -552,6 +553,7 @@ impl SchemalaneMigrator {
                 &applied_success,
                 &installed_by,
                 &mut next_rank,
+                &history_repository,
                 observer,
                 ApplyOptions { skip_applied: true },
             )
@@ -564,9 +566,10 @@ impl SchemalaneMigrator {
     pub async fn status(&self, pool: &Pool) -> Result<StatusReport, SchemalaneError> {
         let client = pool.get().await?;
         let migrations = self.discover_migrations()?;
+        let history_repository = self.history_repository();
 
-        let history = if self.history_table_exists(&client).await? {
-            self.load_history(&client).await?
+        let history = if history_repository.exists(&client).await? {
+            history_repository.load(&client).await?
         } else {
             Vec::new()
         };
@@ -607,9 +610,10 @@ impl SchemalaneMigrator {
         let (mut session, lock_id) = self.acquire_locked_session(pool).await?;
         let result = async {
             let client: &mut Client = &mut session;
+            let history_repository = self.history_repository();
             self.reset_target_schema(client).await?;
             self.set_search_path(client).await?;
-            self.ensure_history_table(client).await?;
+            history_repository.ensure_table(client).await?;
             observer.on_run_planned(&build_status_report(
                 &self.config.schema,
                 &self.config.history_table,
@@ -625,6 +629,7 @@ impl SchemalaneMigrator {
                 &HashSet::new(),
                 &installed_by,
                 &mut next_rank,
+                &history_repository,
                 observer,
                 ApplyOptions {
                     skip_applied: false,
@@ -644,6 +649,7 @@ impl SchemalaneMigrator {
         applied_ok: &HashSet<String>,
         installed_by: &str,
         next_rank: &mut i32,
+        history_repository: &HistoryRepository,
         observer: &O,
         options: ApplyOptions,
     ) -> Result<RunReport, SchemalaneError>
@@ -672,7 +678,8 @@ impl SchemalaneMigrator {
             });
 
             let started = Instant::now();
-            let history_write = self.history_write(migration, installed_by, *next_rank);
+            let history_write =
+                Self::history_write(history_repository, migration, installed_by, *next_rank);
             let run_result = self
                 .apply_migration(client, migration, observer, &history_write)
                 .await;
@@ -681,15 +688,9 @@ impl SchemalaneMigrator {
             match run_result {
                 Ok(applied) => {
                     if applied == Applied::NeedsHistoryRow {
-                        self.insert_history_row(
-                            client,
-                            migration,
-                            installed_by,
-                            execution_time_ms,
-                            true,
-                            *next_rank,
-                        )
-                        .await?;
+                        history_repository
+                            .insert_client(client, &history_write, execution_time_ms, true)
+                            .await?;
                     }
                     *next_rank += 1;
                     report.applied.push(AppliedMigration {
@@ -710,15 +711,8 @@ impl SchemalaneMigrator {
                 Err(err) => {
                     let mut error_message = err.to_string();
                     if !matches!(err, SchemalaneError::MixedStatements { .. }) {
-                        match self
-                            .insert_history_row(
-                                client,
-                                migration,
-                                installed_by,
-                                execution_time_ms,
-                                false,
-                                *next_rank,
-                            )
+                        match history_repository
+                            .insert_client(client, &history_write, execution_time_ms, false)
                             .await
                         {
                             Ok(()) => *next_rank += 1,
@@ -983,13 +977,13 @@ impl SchemalaneMigrator {
     }
 
     fn history_write<'a>(
-        &self,
+        repository: &'a HistoryRepository,
         migration: &'a DiscoveredMigration,
         installed_by: &'a str,
         installed_rank: i32,
     ) -> HistoryWrite<'a> {
         HistoryWrite {
-            table_sql: qualified_table(&self.config.schema, &self.config.history_table),
+            repository,
             installed_rank,
             version: &migration.version_text,
             description: &migration.description_display,
@@ -998,6 +992,10 @@ impl SchemalaneMigrator {
             checksum: migration.checksum,
             installed_by,
         }
+    }
+
+    fn history_repository(&self) -> HistoryRepository {
+        HistoryRepository::new(&self.config.schema, &self.config.history_table)
     }
 
     /// Create the configured schema if it does not already exist. Mirrors
@@ -1031,69 +1029,6 @@ impl SchemalaneMigrator {
         Ok(())
     }
 
-    async fn ensure_history_table(&self, client: &Client) -> Result<(), SchemalaneError> {
-        let table = qualified_table(&self.config.schema, &self.config.history_table);
-        let success_idx = quote_ident(&format!("{}_s_idx", self.config.history_table));
-
-        let ddl = format!(
-            "\
-CREATE TABLE IF NOT EXISTS {table} (\
-\"installed_rank\" INTEGER NOT NULL,\
-\"version\" VARCHAR(50),\
-\"description\" VARCHAR(200) NOT NULL,\
-\"type\" VARCHAR(20) NOT NULL,\
-\"script\" VARCHAR(1000) NOT NULL,\
-\"checksum\" INTEGER,\
-\"installed_by\" VARCHAR(100) NOT NULL,\
-\"installed_on\" TIMESTAMP NOT NULL DEFAULT now(),\
-\"execution_time\" INTEGER NOT NULL,\
-\"success\" BOOLEAN NOT NULL,\
-CONSTRAINT {pk} PRIMARY KEY (\"installed_rank\")\
-);\
-CREATE INDEX IF NOT EXISTS {success_idx} ON {table} (\"success\");",
-            pk = quote_ident(&format!("{}_pk", self.config.history_table)),
-        );
-
-        client.batch_execute(&ddl).await?;
-        Ok(())
-    }
-
-    async fn history_table_exists(&self, client: &Client) -> Result<bool, SchemalaneError> {
-        let regclass = qualified_table(&self.config.schema, &self.config.history_table);
-        let row = client
-            .query_one("SELECT to_regclass($1) IS NOT NULL AS exists", &[&regclass])
-            .await?;
-
-        let exists: bool = row.get("exists");
-        Ok(exists)
-    }
-
-    async fn load_history(&self, client: &Client) -> Result<Vec<HistoryRow>, SchemalaneError> {
-        let table = qualified_table(&self.config.schema, &self.config.history_table);
-        let query = format!(
-            "SELECT \"installed_rank\", \"version\", \"description\", \"type\", \"script\", \"checksum\", \"installed_by\", \"installed_on\"::text AS \"installed_on\", \"execution_time\", \"success\" FROM {table} ORDER BY \"installed_rank\" ASC"
-        );
-
-        let rows = client.query(&query, &[]).await?;
-
-        let mut history = Vec::with_capacity(rows.len());
-        for row in rows {
-            history.push(HistoryRow {
-                installed_rank: row.get("installed_rank"),
-                version: row.get("version"),
-                description: row.get("description"),
-                migration_type: row.get("type"),
-                script: row.get("script"),
-                checksum: row.get("checksum"),
-                installed_on: row.get("installed_on"),
-                execution_time: row.get("execution_time"),
-                success: row.get("success"),
-            });
-        }
-
-        Ok(history)
-    }
-
     async fn resolve_installed_by(&self, client: &Client) -> Result<String, SchemalaneError> {
         if let Some(installed_by) = &self.config.installed_by {
             return Ok(installed_by.clone());
@@ -1104,39 +1039,6 @@ CREATE INDEX IF NOT EXISTS {success_idx} ON {table} (\"success\");",
             .await?;
         let current_user: String = row.get("current_user");
         Ok(current_user)
-    }
-
-    async fn insert_history_row(
-        &self,
-        client: &Client,
-        migration: &DiscoveredMigration,
-        installed_by: &str,
-        execution_time: i32,
-        success: bool,
-        installed_rank: i32,
-    ) -> Result<(), SchemalaneError> {
-        let table = qualified_table(&self.config.schema, &self.config.history_table);
-
-        let sql = format!(
-            "INSERT INTO {table} (\"installed_rank\", \"version\", \"description\", \"type\", \"script\", \"checksum\", \"installed_by\", \"execution_time\", \"success\") VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)"
-        );
-
-        let version: Option<&str> = Some(migration.version_text.as_str());
-        let migration_type = migration.migration_type.as_history_type();
-        let params: Vec<&(dyn ToSql + Sync)> = vec![
-            &installed_rank,
-            &version,
-            &migration.description_display,
-            &migration_type,
-            &migration.script,
-            &migration.checksum,
-            &installed_by,
-            &execution_time,
-            &success,
-        ];
-
-        client.execute(&sql, &params).await?;
-        Ok(())
     }
 
     /// Drop the configured target schema (CASCADE) and recreate it empty.
@@ -1465,12 +1367,14 @@ where
                     return Err(SchemalaneError::Db(err));
                 }
             }
-            insert_history_row_txn(
-                &txn,
-                history_write,
-                millis_i32(started.elapsed().as_millis()),
-            )
-            .await?;
+            history_write
+                .repository
+                .insert_transaction(
+                    &txn,
+                    history_write,
+                    millis_i32(started.elapsed().as_millis()),
+                )
+                .await?;
             txn.commit().await?;
             Ok(Applied::HistoryRecorded)
         }
@@ -1483,32 +1387,6 @@ where
             Ok(Applied::NeedsHistoryRow)
         }
     }
-}
-
-async fn insert_history_row_txn(
-    txn: &Transaction<'_>,
-    history: &HistoryWrite<'_>,
-    execution_time: i32,
-) -> Result<(), SchemalaneError> {
-    let sql = format!(
-        "INSERT INTO {} (\"installed_rank\", \"version\", \"description\", \"type\", \"script\", \"checksum\", \"installed_by\", \"execution_time\", \"success\") VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)",
-        history.table_sql
-    );
-    let version = Some(history.version);
-    let success = true;
-    let params: Vec<&(dyn ToSql + Sync)> = vec![
-        &history.installed_rank,
-        &version,
-        &history.description,
-        &history.migration_type,
-        &history.script,
-        &history.checksum,
-        &history.installed_by,
-        &execution_time,
-        &success,
-    ];
-    txn.execute(&sql, &params).await?;
-    Ok(())
 }
 
 trait BatchExec {
@@ -1878,7 +1756,7 @@ struct ApplyOptions {
 }
 
 struct HistoryWrite<'a> {
-    table_sql: String,
+    repository: &'a HistoryRepository,
     installed_rank: i32,
     version: &'a str,
     description: &'a str,
@@ -1916,6 +1794,140 @@ struct HistoryRow {
     installed_on: String,
     execution_time: i32,
     success: bool,
+}
+
+/// Owns every SQL statement touching the Flyway-compatible history table.
+/// Its DDL and column set are the compatibility contract from spec section 6.
+struct HistoryRepository {
+    qualified: String,
+    history_table: String,
+}
+
+impl HistoryRepository {
+    const SELECT_COLUMNS: &'static str = "\"installed_rank\", \"version\", \"description\", \"type\", \"script\", \"checksum\", \"installed_by\", \"installed_on\"::text AS \"installed_on\", \"execution_time\", \"success\"";
+    // installed_on is intentionally omitted: PostgreSQL supplies its now() default.
+    const INSERT_COLUMNS: &'static str = "\"installed_rank\", \"version\", \"description\", \"type\", \"script\", \"checksum\", \"installed_by\", \"execution_time\", \"success\"";
+
+    fn new(schema: &str, history_table: &str) -> Self {
+        Self {
+            qualified: qualified_table(schema, history_table),
+            history_table: history_table.to_owned(),
+        }
+    }
+
+    async fn ensure_table(&self, client: &Client) -> Result<(), SchemalaneError> {
+        let success_idx = quote_ident(&format!("{}_s_idx", self.history_table));
+        let ddl = format!(
+            "\
+CREATE TABLE IF NOT EXISTS {table} (\
+\"installed_rank\" INTEGER NOT NULL,\
+\"version\" VARCHAR(50),\
+\"description\" VARCHAR(200) NOT NULL,\
+\"type\" VARCHAR(20) NOT NULL,\
+\"script\" VARCHAR(1000) NOT NULL,\
+\"checksum\" INTEGER,\
+\"installed_by\" VARCHAR(100) NOT NULL,\
+\"installed_on\" TIMESTAMP NOT NULL DEFAULT now(),\
+\"execution_time\" INTEGER NOT NULL,\
+\"success\" BOOLEAN NOT NULL,\
+CONSTRAINT {pk} PRIMARY KEY (\"installed_rank\")\
+);\
+CREATE INDEX IF NOT EXISTS {success_idx} ON {table} (\"success\");",
+            table = self.qualified,
+            pk = quote_ident(&format!("{}_pk", self.history_table)),
+        );
+        client.batch_execute(&ddl).await?;
+        Ok(())
+    }
+
+    async fn exists(&self, client: &Client) -> Result<bool, SchemalaneError> {
+        let row = client
+            .query_one(
+                "SELECT to_regclass($1) IS NOT NULL AS exists",
+                &[&self.qualified],
+            )
+            .await?;
+        Ok(row.get("exists"))
+    }
+
+    async fn load(&self, client: &Client) -> Result<Vec<HistoryRow>, SchemalaneError> {
+        let query = format!(
+            "SELECT {} FROM {} ORDER BY \"installed_rank\" ASC",
+            Self::SELECT_COLUMNS,
+            self.qualified
+        );
+        let rows = client.query(&query, &[]).await?;
+        Ok(rows
+            .into_iter()
+            .map(|row| HistoryRow {
+                installed_rank: row.get("installed_rank"),
+                version: row.get("version"),
+                description: row.get("description"),
+                migration_type: row.get("type"),
+                script: row.get("script"),
+                checksum: row.get("checksum"),
+                installed_on: row.get("installed_on"),
+                execution_time: row.get("execution_time"),
+                success: row.get("success"),
+            })
+            .collect())
+    }
+
+    async fn insert_client(
+        &self,
+        client: &Client,
+        history: &HistoryWrite<'_>,
+        execution_time: i32,
+        success: bool,
+    ) -> Result<(), SchemalaneError> {
+        let sql = format!(
+            "INSERT INTO {} ({}) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)",
+            self.qualified,
+            Self::INSERT_COLUMNS
+        );
+        let version = Some(history.version);
+        let params: Vec<&(dyn ToSql + Sync)> = vec![
+            &history.installed_rank,
+            &version,
+            &history.description,
+            &history.migration_type,
+            &history.script,
+            &history.checksum,
+            &history.installed_by,
+            &execution_time,
+            &success,
+        ];
+        client.execute(&sql, &params).await?;
+        Ok(())
+    }
+
+    async fn insert_transaction(
+        &self,
+        transaction: &Transaction<'_>,
+        history: &HistoryWrite<'_>,
+        execution_time: i32,
+    ) -> Result<(), SchemalaneError> {
+        let sql = format!(
+            "INSERT INTO {} ({}) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)",
+            self.qualified,
+            Self::INSERT_COLUMNS
+        );
+        let version = Some(history.version);
+        let success = true;
+        let params: Vec<&(dyn ToSql + Sync)> = vec![
+            &history.installed_rank,
+            &version,
+            &history.description,
+            &history.migration_type,
+            &history.script,
+            &history.checksum,
+            &history.installed_by,
+            &execution_time,
+            &success,
+        ];
+        transaction.execute(&sql, &params).await?;
+        Ok(())
+    }
 }
 
 pub const fn should_fail_on_pending(report: &StatusReport) -> Result<(), SchemalaneError> {
