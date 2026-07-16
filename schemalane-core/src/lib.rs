@@ -12,6 +12,7 @@ mod migrator;
 mod observer;
 mod report;
 mod rust_migration;
+mod sql_analysis;
 
 pub use config::SchemalaneConfig;
 pub use error::SchemalaneError;

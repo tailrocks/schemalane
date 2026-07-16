@@ -1,6 +1,5 @@
 use crc32fast::Hasher;
 use deadpool_postgres::Pool;
-use pg_query::protobuf;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::Path;
 use std::time::Instant;
@@ -26,6 +25,9 @@ use crate::history::latest_history_by_script;
 use crate::history::{HistoryRepository, HistoryRow, HistoryWrite};
 use crate::ident::quote_ident;
 use crate::report::build_status_report;
+use crate::sql_analysis::{
+    ParsedSqlStatement, SqlTransactionMode, parse_sql_migration, resolve_sql_transaction_mode,
+};
 use crate::{SchemalaneConfig, SchemalaneError};
 
 use crate::{
@@ -629,176 +631,6 @@ impl SchemalaneMigrator {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum SqlTransactionMode {
-    /// All statements are safe to run inside a transaction.
-    Transactional,
-    /// All statements must run **outside** a transaction (e.g. `CREATE INDEX CONCURRENTLY`).
-    NonTransactional,
-}
-
-/// A parsed SQL statement from a migration file, produced by the `PostgreSQL` parser via
-/// `pg_query`.
-struct ParsedSqlStatement {
-    /// The raw SQL text to execute.
-    sql: String,
-    /// Source line number in the migration file (1-based).
-    source_line: u64,
-    /// A compact human-readable preview for observer events.
-    preview: String,
-    /// The protobuf parse node (used for AST-based non-transactional detection).
-    node: Option<protobuf::Node>,
-}
-
-/// Parses a SQL migration file into a list of [`ParsedSqlStatement`]s using the real
-/// `PostgreSQL` parser via `pg_query`.
-fn parse_sql_migration(sql: &str) -> Result<Vec<ParsedSqlStatement>, SchemalaneError> {
-    let stmts = pg_query::split_with_parser(sql).map_err(|err| {
-        SchemalaneError::Validation(format!("failed to split SQL migration: {err}"))
-    })?;
-
-    let mut result = Vec::with_capacity(stmts.len());
-
-    for stmt_sql in stmts {
-        let trimmed = stmt_sql.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-
-        let parsed = pg_query::parse(trimmed).map_err(|err| {
-            SchemalaneError::Validation(format!("failed to parse SQL statement: {err}"))
-        })?;
-
-        let source_line = offset_to_line(sql, trimmed);
-        let preview = pg_query_fmt::preview::statement_preview(&parsed);
-        let node = parsed
-            .protobuf
-            .stmts
-            .into_iter()
-            .next()
-            .and_then(|raw_stmt| raw_stmt.stmt.map(|n| *n));
-
-        result.push(ParsedSqlStatement {
-            sql: trimmed.to_owned(),
-            source_line,
-            preview,
-            node,
-        });
-    }
-
-    Ok(result)
-}
-
-/// Converts a character offset within the full SQL text to a 1-based line number.
-fn offset_to_line(full_sql: &str, stmt_slice: &str) -> u64 {
-    let offset = stmt_slice.as_ptr() as usize - full_sql.as_ptr() as usize;
-    let prefix = &full_sql[..offset.min(full_sql.len())];
-    (prefix.chars().filter(|&c| c == '\n').count() + 1) as u64
-}
-
-/// Determines whether a parsed SQL statement cannot execute inside a `PostgreSQL` transaction
-/// block.
-///
-/// Uses the protobuf AST node from `pg_query` (the real `PostgreSQL` parser) for detection.
-/// This mirrors Flyway's `PostgreSQLParser.detectCanExecuteInTransaction()`.
-fn is_non_transactional(stmt: &ParsedSqlStatement) -> bool {
-    use protobuf::node::Node;
-
-    let Some(ref node) = stmt.node else {
-        return false;
-    };
-    let Some(ref node_inner) = node.node else {
-        return false;
-    };
-
-    match node_inner {
-        // CREATE [UNIQUE] INDEX CONCURRENTLY
-        Node::IndexStmt(idx) => idx.concurrent,
-
-        // DROP INDEX CONCURRENTLY (generic DropStmt with concurrent flag)
-        Node::DropStmt(drop) => drop.concurrent,
-
-        // VACUUM is non-transactional, but standalone ANALYZE (also a VacuumStmt
-        // with is_vacuumcmd=false) CAN run inside a transaction.
-        Node::VacuumStmt(v) => v.is_vacuumcmd,
-
-        // REINDEX SCHEMA / DATABASE / SYSTEM are non-transactional.
-        // REINDEX TABLE / INDEX can run inside a transaction (Flyway: ^REINDEX (SCHEMA|DATABASE|SYSTEM)).
-        Node::ReindexStmt(r) => {
-            let kind = r.kind;
-            kind == protobuf::ReindexObjectType::ReindexObjectSchema as i32
-                || kind == protobuf::ReindexObjectType::ReindexObjectDatabase as i32
-                || kind == protobuf::ReindexObjectType::ReindexObjectSystem as i32
-        }
-
-        // Only DISCARD ALL is non-transactional (Flyway: ^DISCARD ALL).
-        // DISCARD PLANS / SEQUENCES / TEMP can run inside a transaction.
-        Node::DiscardStmt(d) => d.target == protobuf::DiscardMode::DiscardAll as i32,
-
-        // Always non-transactional statements
-        Node::AlterSystemStmt(_)
-        | Node::CreatedbStmt(_)
-        | Node::CreateTableSpaceStmt(_)
-        | Node::CreateSubscriptionStmt(_)
-        | Node::DropdbStmt(_)
-        | Node::DropTableSpaceStmt(_)
-        | Node::DropSubscriptionStmt(_) => true,
-
-        _ => false,
-    }
-}
-
-/// Determines the transaction mode for a SQL migration by examining its parsed statements.
-///
-/// If **all** statements are transactional -> `Transactional`.
-/// If **all** statements are non-transactional -> `NonTransactional`.
-/// If the file **mixes** both kinds -> returns an `Err` with the first offending line.
-///
-/// This replicates Flyway's default behaviour (`mixed = false`).
-fn resolve_sql_transaction_mode(
-    statements: &[ParsedSqlStatement],
-    script: &str,
-) -> Result<SqlTransactionMode, SchemalaneError> {
-    let mut has_transactional = false;
-    let mut has_non_transactional = false;
-    let mut first_non_transactional_line: Option<u64> = None;
-    let mut first_transactional_line: Option<u64> = None;
-
-    for stmt in statements {
-        let line = stmt.source_line;
-
-        if is_non_transactional(stmt) {
-            has_non_transactional = true;
-            if first_non_transactional_line.is_none() {
-                first_non_transactional_line = Some(line);
-            }
-        } else {
-            has_transactional = true;
-            if first_transactional_line.is_none() {
-                first_transactional_line = Some(line);
-            }
-        }
-    }
-
-    if has_transactional && has_non_transactional {
-        let offending_line = if first_transactional_line < first_non_transactional_line {
-            first_non_transactional_line.unwrap_or(1)
-        } else {
-            first_transactional_line.unwrap_or(1)
-        };
-        return Err(SchemalaneError::MixedStatements {
-            script: script.to_owned(),
-            line: offending_line,
-        });
-    }
-
-    if has_non_transactional {
-        Ok(SqlTransactionMode::NonTransactional)
-    } else {
-        Ok(SqlTransactionMode::Transactional)
-    }
-}
-
 async fn execute_sql_migration<O>(
     client: &mut Client,
     sql: &str,
@@ -974,12 +806,13 @@ pub const fn should_fail_on_pending(report: &StatusReport) -> Result<(), Schemal
 
 #[cfg(test)]
 mod tests {
+    use crate::sql_analysis::is_non_transactional;
+
     use super::{
         DiscoveredMigration, HistoryRow, MigrationSource, MigrationState, MigrationType,
         SchemalaneConfig, SchemalaneError, SchemalaneMigrator, SqlTransactionMode,
         build_status_report, calculate_checksum, derive_advisory_lock_id, init_migration_project,
-        is_non_transactional, parse_sql_filename, parse_sql_migration,
-        resolve_sql_transaction_mode,
+        parse_sql_filename, parse_sql_migration, resolve_sql_transaction_mode,
     };
     use std::fs;
     use std::path::PathBuf;
