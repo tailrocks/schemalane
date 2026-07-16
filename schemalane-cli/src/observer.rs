@@ -188,7 +188,7 @@ impl MigrationObserver for CliProgressObserver {
         match self.verbosity {
             Verbosity::Compact => {
                 let preview = truncate_preview(
-                    &sanitize_terminal(&event.statement_preview),
+                    &sanitize_terminal(&pg_query_fmt::preview::preview_sql(&event.statement)),
                     MAX_PREVIEW_WIDTH,
                 );
                 let padded_preview = format!("{preview:<MAX_PREVIEW_WIDTH$}");
@@ -234,7 +234,7 @@ impl MigrationObserver for CliProgressObserver {
         match self.verbosity {
             Verbosity::Compact => {
                 let preview = truncate_preview(
-                    &sanitize_terminal(&event.statement_preview),
+                    &sanitize_terminal(&pg_query_fmt::preview::preview_sql(&event.statement)),
                     MAX_PREVIEW_WIDTH,
                 );
                 let padded_preview = format!("{preview:<MAX_PREVIEW_WIDTH$}");

@@ -2382,7 +2382,6 @@ dependencies = [
  "crc32fast",
  "deadpool-postgres",
  "pg_query",
- "pg_query_fmt",
  "schemalane-macros",
  "schemalane-version",
  "serde",

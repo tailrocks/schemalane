@@ -25,7 +25,6 @@ schemalane-macros = { workspace = true }
 schemalane-version = { workspace = true }
 serde = { version = "1.0.228", features = ["derive"] }
 pg_query = { workspace = true }
-pg_query_fmt = { workspace = true }
 thiserror = { workspace = true }
 tokio-postgres = { workspace = true }
 

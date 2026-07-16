@@ -110,7 +110,6 @@ where
         migration: migration.clone(),
         statement_index: index + 1,
         total_statements,
-        statement_preview: statement.preview.clone(),
         statement: statement.sql.clone(),
         source_line,
     });
@@ -121,7 +120,6 @@ where
                 migration: migration.clone(),
                 statement_index: index + 1,
                 total_statements,
-                statement_preview: statement.preview.clone(),
                 statement: statement.sql.clone(),
                 execution_time_ms: millis_i32(started.elapsed().as_millis()),
                 source_line,
@@ -133,7 +131,6 @@ where
                 migration: migration.clone(),
                 statement_index: index + 1,
                 total_statements,
-                statement_preview: statement.preview.clone(),
                 statement: statement.sql.clone(),
                 execution_time_ms: millis_i32(started.elapsed().as_millis()),
                 error: error.to_string(),

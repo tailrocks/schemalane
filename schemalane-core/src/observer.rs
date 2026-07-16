@@ -38,7 +38,6 @@ pub struct SqlStatementStarted {
     pub migration: MigrationInfo,
     pub statement_index: usize,
     pub total_statements: usize,
-    pub statement_preview: String,
     pub statement: String,
     pub source_line: Option<u64>,
 }
@@ -48,7 +47,6 @@ pub struct SqlStatementFinished {
     pub migration: MigrationInfo,
     pub statement_index: usize,
     pub total_statements: usize,
-    pub statement_preview: String,
     pub statement: String,
     pub execution_time_ms: i32,
     pub source_line: Option<u64>,
@@ -59,7 +57,6 @@ pub struct SqlStatementFailed {
     pub migration: MigrationInfo,
     pub statement_index: usize,
     pub total_statements: usize,
-    pub statement_preview: String,
     pub statement: String,
     pub execution_time_ms: i32,
     pub error: String,

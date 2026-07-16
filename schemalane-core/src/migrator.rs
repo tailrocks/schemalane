@@ -943,13 +943,9 @@ INSERT INTO ledger(note) VALUES ('ok');
         let statements = parse_sql_migration(sql).expect("should parse");
         assert_eq!(statements.len(), 3, "expected three executable statements");
         assert!(
-            statements[0]
-                .preview
-                .to_uppercase()
-                .contains("CREATE TABLE")
-                || statements[0].preview.contains("CreateStmt"),
+            statements[0].sql.to_uppercase().starts_with("CREATE TABLE"),
             "first statement should be CREATE TABLE, got: {}",
-            statements[0].preview,
+            statements[0].sql,
         );
         assert!(
             statements[1].sql.contains("body;semicolon"),

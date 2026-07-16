@@ -11,7 +11,6 @@ pub(crate) enum SqlTransactionMode {
 pub(crate) struct ParsedSqlStatement {
     pub(crate) sql: String,
     pub(crate) source_line: u64,
-    pub(crate) preview: String,
     pub(crate) node: Option<protobuf::Node>,
 }
 
@@ -29,7 +28,6 @@ pub(crate) fn parse_sql_migration(sql: &str) -> Result<Vec<ParsedSqlStatement>, 
             SchemalaneError::Validation(format!("failed to parse SQL statement: {err}"))
         })?;
         let source_line = offset_to_line(sql, trimmed);
-        let preview = pg_query_fmt::preview::statement_preview(&parsed);
         let node = parsed
             .protobuf
             .stmts
@@ -39,7 +37,6 @@ pub(crate) fn parse_sql_migration(sql: &str) -> Result<Vec<ParsedSqlStatement>, 
         result.push(ParsedSqlStatement {
             sql: trimmed.to_owned(),
             source_line,
-            preview,
             node,
         });
     }
