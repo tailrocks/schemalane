@@ -1,6 +1,7 @@
 #![allow(clippy::print_stdout, clippy::print_stderr, clippy::future_not_send)]
 
 mod args;
+mod commands;
 mod connect;
 mod delegate;
 mod observer;
