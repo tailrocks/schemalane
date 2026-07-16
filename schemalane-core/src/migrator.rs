@@ -29,8 +29,8 @@ use crate::{SchemalaneConfig, SchemalaneError};
 
 use crate::{
     AppliedMigration, MigrationFailed, MigrationFinished, MigrationObserver, MigrationStarted,
-    MigrationState, NoopMigrationObserver, PlannedMigration, PlannedTransactionMode, RunReport,
-    StatusReport, UpPlan,
+    NoopMigrationObserver, PlannedMigration, PlannedTransactionMode, RunReport, StatusReport,
+    UpPlan,
 };
 
 #[cfg(test)]
@@ -176,34 +176,21 @@ impl SchemalaneMigrator {
     /// Failed history returns exit condition 4; missing or checksum-mismatched
     /// migrations return exit condition 3. Pending migrations are valid.
     pub async fn validate(&self, pool: &Pool) -> Result<StatusReport, SchemalaneError> {
-        let report = self.status(pool).await?;
-        if report.summary.failed > 0 {
-            let scripts = report
-                .migrations
-                .iter()
-                .filter(|entry| entry.state == MigrationState::Failed)
-                .map(|entry| entry.script.as_str())
-                .collect::<Vec<_>>()
-                .join(", ");
-            return Err(SchemalaneError::FailedHistory(scripts));
-        }
-        let mut drift = Vec::new();
-        if report.summary.missing > 0 {
-            drift.push(format!(
-                "{} missing migration(s) in local crate",
-                report.summary.missing
-            ));
-        }
-        if report.summary.checksum_mismatch > 0 {
-            drift.push(format!(
-                "{} checksum mismatch(es)",
-                report.summary.checksum_mismatch
-            ));
-        }
-        if !drift.is_empty() {
-            return Err(SchemalaneError::Drift(drift.join(", ")));
-        }
-        Ok(report)
+        let migrations = self.discover_migrations()?;
+        let client = pool.get().await?;
+        let repository = self.history_repository();
+        let history = if repository.exists(&client).await? {
+            repository.load(&client).await?
+        } else {
+            Vec::new()
+        };
+        Self::ensure_no_blocking_history(&migrations, &history)?;
+        Ok(build_status_report(
+            &self.config.schema,
+            &self.config.history_table,
+            &migrations,
+            &history,
+        ))
     }
 
     /// Builds a read-only ordered plan for pending migrations.
@@ -652,10 +639,11 @@ mod tests {
     };
 
     use super::{
-        DiscoveredMigration, HistoryRow, MigrationSource, MigrationState, MigrationType,
-        SchemalaneConfig, SchemalaneError, SchemalaneMigrator, build_status_report,
-        calculate_checksum, derive_advisory_lock_id, init_migration_project, parse_sql_filename,
+        DiscoveredMigration, HistoryRow, MigrationSource, MigrationType, SchemalaneConfig,
+        SchemalaneError, SchemalaneMigrator, build_status_report, calculate_checksum,
+        derive_advisory_lock_id, init_migration_project, parse_sql_filename,
     };
+    use crate::MigrationState;
     use std::fs;
     use std::path::PathBuf;
     use tempfile::TempDir;
