@@ -1634,6 +1634,7 @@ fn init_template_files(package_name: &str, lib_ident: &str) -> Vec<(PathBuf, Str
             PathBuf::from(".gitignore"),
             INIT_GITIGNORE_TEMPLATE.to_owned(),
         ),
+        (PathBuf::from("build.rs"), INIT_BUILD_RS_TEMPLATE.to_owned()),
         (
             PathBuf::from("src/main.rs"),
             INIT_MAIN_RS_TEMPLATE
@@ -1700,6 +1701,7 @@ publish = false
 schemalane-core = "0.1"
 schemalane-cli = "0.1"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+tokio-postgres = "0.7"
 
 # Developing against a local schemalane checkout? Use path dependencies:
 # schemalane-core = { path = "../schemalane-core" }
@@ -1732,6 +1734,12 @@ DATABASE_URL="postgres://…" cargo run --manifest-path ./migration/Cargo.toml -
 "#;
 
 const INIT_GITIGNORE_TEMPLATE: &str = "/target\n.env\n";
+
+const INIT_BUILD_RS_TEMPLATE: &str = r#"fn main() {
+    // Re-run when migrations are added or removed so embed_migrations! re-scans.
+    println!("cargo::rerun-if-changed=migrations");
+}
+"#;
 
 const INIT_MAIN_RS_TEMPLATE: &str = r"use __LIB_IDENT__::embedded;
 
@@ -2122,6 +2130,12 @@ INSERT INTO ledger(note) VALUES ('ok');
             "main runner should be created"
         );
         assert!(
+            target.join("build.rs").exists(),
+            "build.rs should be created"
+        );
+        let build_rs = fs::read_to_string(target.join("build.rs")).expect("read build.rs");
+        assert!(build_rs.contains("cargo::rerun-if-changed=migrations"));
+        assert!(
             target.join("migrations/V1__create_cake_table.sql").exists(),
             "sample SQL migration should be created"
         );
@@ -2147,6 +2161,10 @@ INSERT INTO ledger(note) VALUES ('ok');
         assert!(
             !cargo_toml.contains("kellnr"),
             "scaffold must not reference a private registry"
+        );
+        assert!(
+            cargo_toml.contains("tokio-postgres = \"0.7\""),
+            "sample Rust migration needs its direct driver dependency"
         );
 
         let lib_source = fs::read_to_string(target.join("src/lib.rs")).expect("read src/lib.rs");
