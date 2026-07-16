@@ -48,10 +48,8 @@ CREATE TABLE price_histories (
     runtime.block_on(async move {
         let pool = create_pool(&db_url)?;
 
-        let migrator = SchemalaneMigrator::new(SchemalaneConfig {
-            migrations_dir,
-            ..Default::default()
-        });
+        let migrator =
+            SchemalaneMigrator::new(SchemalaneConfig::new().with_migrations_dir(migrations_dir));
 
         let up_report = migrator.up(&pool).await?;
         assert_eq!(up_report.applied.len(), 2);
@@ -101,11 +99,11 @@ fn status_sees_history_in_mixed_case_schema() -> Result<(), Box<dyn Error + 'sta
     let runtime = tokio::runtime::Runtime::new()?;
     runtime.block_on(async move {
         let pool = create_pool(&db_url)?;
-        let migrator = SchemalaneMigrator::new(SchemalaneConfig {
-            schema: "MyApp".to_owned(),
-            migrations_dir,
-            ..Default::default()
-        });
+        let migrator = SchemalaneMigrator::new(
+            SchemalaneConfig::new()
+                .with_schema("MyApp")
+                .with_migrations_dir(migrations_dir),
+        );
 
         assert_eq!(migrator.up(&pool).await?.applied.len(), 1);
         let status = migrator.status(&pool).await?;
@@ -141,11 +139,11 @@ fn advisory_locks_do_not_contend_across_schemas() -> Result<(), Box<dyn Error + 
             .execute("SELECT pg_advisory_lock($1)", &[&public_lock])
             .await?;
 
-        let migrator = SchemalaneMigrator::new(SchemalaneConfig {
-            schema: "other".to_owned(),
-            migrations_dir,
-            ..Default::default()
-        });
+        let migrator = SchemalaneMigrator::new(
+            SchemalaneConfig::new()
+                .with_schema("other")
+                .with_migrations_dir(migrations_dir),
+        );
         let report = tokio::time::timeout(std::time::Duration::from_secs(5), migrator.up(&pool))
             .await
             .expect("different-schema lock must not block")?;
@@ -184,10 +182,8 @@ CREATE TABLE cake (
     runtime.block_on(async move {
         let pool = create_pool(&db_url)?;
 
-        let migrator = SchemalaneMigrator::new(SchemalaneConfig {
-            migrations_dir,
-            ..Default::default()
-        });
+        let migrator =
+            SchemalaneMigrator::new(SchemalaneConfig::new().with_migrations_dir(migrations_dir));
 
         migrator.up(&pool).await?;
         {
@@ -237,10 +233,8 @@ fn fresh_drops_only_target_schema() -> Result<(), Box<dyn Error + 'static>> {
     let runtime = tokio::runtime::Runtime::new()?;
     runtime.block_on(async move {
         let pool = create_pool(&db_url)?;
-        let migrator = SchemalaneMigrator::new(SchemalaneConfig {
-            migrations_dir,
-            ..Default::default()
-        });
+        let migrator =
+            SchemalaneMigrator::new(SchemalaneConfig::new().with_migrations_dir(migrations_dir));
 
         migrator.up(&pool).await?;
         {
@@ -301,10 +295,8 @@ CREATE TABLE cake (
     runtime.block_on(async move {
         let pool = create_pool(&db_url)?;
 
-        let migrator = SchemalaneMigrator::new(SchemalaneConfig {
-            migrations_dir,
-            ..Default::default()
-        });
+        let migrator =
+            SchemalaneMigrator::new(SchemalaneConfig::new().with_migrations_dir(migrations_dir));
 
         migrator.up(&pool).await?;
 
@@ -352,10 +344,7 @@ fn rust_migration_success_and_history_type() -> Result<(), Box<dyn Error + 'stat
     runtime.block_on(async move {
         let pool = create_pool(&db_url)?;
 
-        let mut migrator = SchemalaneMigrator::new(SchemalaneConfig {
-            migrations_dir,
-            ..Default::default()
-        });
+        let mut migrator = SchemalaneMigrator::new(SchemalaneConfig::new().with_migrations_dir(migrations_dir));
         migrator.register_rust_migration(
             "V1__create_rust_records.rs",
             RustMigrationExecutor::new(|client| Box::pin(create_rust_records(client))),
@@ -413,10 +402,8 @@ fn rust_migration_transaction_mode_rolls_back_on_failure() -> Result<(), Box<dyn
     runtime.block_on(async move {
         let pool = create_pool(&db_url)?;
 
-        let mut migrator = SchemalaneMigrator::new(SchemalaneConfig {
-            migrations_dir,
-            ..Default::default()
-        });
+        let mut migrator =
+            SchemalaneMigrator::new(SchemalaneConfig::new().with_migrations_dir(migrations_dir));
         migrator.register_rust_migration(
             "V2__rust_tx_failure.rs",
             RustMigrationExecutor::transactional(|client| {
@@ -468,10 +455,8 @@ fn rust_migration_no_transaction_mode_persists_partial_work_on_failure()
     runtime.block_on(async move {
         let pool = create_pool(&db_url)?;
 
-        let mut migrator = SchemalaneMigrator::new(SchemalaneConfig {
-            migrations_dir,
-            ..Default::default()
-        });
+        let mut migrator =
+            SchemalaneMigrator::new(SchemalaneConfig::new().with_migrations_dir(migrations_dir));
         migrator.register_rust_migration(
             "V3__rust_no_tx_failure.rs",
             RustMigrationExecutor::with_mode(RustTransactionMode::NoTransaction, |client| {
@@ -529,10 +514,7 @@ fn rust_migration_requires_registered_executor() -> Result<(), Box<dyn Error + '
     runtime.block_on(async move {
         let pool = create_pool(&db_url)?;
 
-        let migrator = SchemalaneMigrator::new(SchemalaneConfig {
-            migrations_dir,
-            ..Default::default()
-        });
+        let migrator = SchemalaneMigrator::new(SchemalaneConfig::new().with_migrations_dir(migrations_dir));
 
         let err = migrator.up(&pool).await.expect_err("expected validation error");
         assert!(
@@ -572,7 +554,7 @@ fn sql_migration_failure_rolls_back_and_records_failed_row() -> Result<(), Box<d
     )?;
     tokio::runtime::Runtime::new()?.block_on(async move {
         let pool = create_pool(&db_url)?;
-        let migrator = SchemalaneMigrator::new(SchemalaneConfig { migrations_dir, ..Default::default() });
+        let migrator = SchemalaneMigrator::new(SchemalaneConfig::new().with_migrations_dir(migrations_dir));
         assert!(matches!(migrator.up(&pool).await, Err(SchemalaneError::MigrationExecution { .. })));
         assert!(!table_exists(&pool, "roll_a").await?);
         let client = pool.get().await?;
@@ -599,10 +581,8 @@ fn transactional_migration_and_history_commit_atomically() -> Result<(), Box<dyn
     )?;
     tokio::runtime::Runtime::new()?.block_on(async move {
         let pool = create_pool(&db_url)?;
-        let migrator = SchemalaneMigrator::new(SchemalaneConfig {
-            migrations_dir,
-            ..Default::default()
-        });
+        let migrator =
+            SchemalaneMigrator::new(SchemalaneConfig::new().with_migrations_dir(migrations_dir));
         assert_eq!(migrator.up(&pool).await?.applied.len(), 1);
         assert_eq!(
             scalar_i64(&pool, "SELECT COUNT(*) AS count FROM public.atomic_t").await?,
@@ -636,10 +616,8 @@ fn failed_transactional_migration_leaves_only_failed_row() -> Result<(), Box<dyn
     )?;
     tokio::runtime::Runtime::new()?.block_on(async move {
         let pool = create_pool(&db_url)?;
-        let migrator = SchemalaneMigrator::new(SchemalaneConfig {
-            migrations_dir,
-            ..Default::default()
-        });
+        let migrator =
+            SchemalaneMigrator::new(SchemalaneConfig::new().with_migrations_dir(migrations_dir));
         assert!(matches!(
             migrator.up(&pool).await,
             Err(SchemalaneError::MigrationExecution { .. })
@@ -681,10 +659,8 @@ fn failed_history_blocks_next_up_until_fixed() -> Result<(), Box<dyn Error + 'st
     )?;
     tokio::runtime::Runtime::new()?.block_on(async move {
         let pool = create_pool(&db_url)?;
-        let migrator = SchemalaneMigrator::new(SchemalaneConfig {
-            migrations_dir,
-            ..Default::default()
-        });
+        let migrator =
+            SchemalaneMigrator::new(SchemalaneConfig::new().with_migrations_dir(migrations_dir));
         assert!(matches!(
             migrator.up(&pool).await,
             Err(SchemalaneError::MigrationExecution { .. })
@@ -715,10 +691,8 @@ fn mixed_statements_records_no_history_row() -> Result<(), Box<dyn Error + 'stat
     )?;
     tokio::runtime::Runtime::new()?.block_on(async move {
         let pool = create_pool(&db_url)?;
-        let migrator = SchemalaneMigrator::new(SchemalaneConfig {
-            migrations_dir,
-            ..Default::default()
-        });
+        let migrator =
+            SchemalaneMigrator::new(SchemalaneConfig::new().with_migrations_dir(migrations_dir));
         assert!(matches!(
             migrator.up(&pool).await,
             Err(SchemalaneError::MixedStatements { .. })
@@ -752,10 +726,8 @@ fn non_transactional_sql_executes_outside_txn() -> Result<(), Box<dyn Error + 's
     )?;
     tokio::runtime::Runtime::new()?.block_on(async move {
         let pool = create_pool(&db_url)?;
-        let migrator = SchemalaneMigrator::new(SchemalaneConfig {
-            migrations_dir,
-            ..Default::default()
-        });
+        let migrator =
+            SchemalaneMigrator::new(SchemalaneConfig::new().with_migrations_dir(migrations_dir));
         assert_eq!(migrator.up(&pool).await?.applied.len(), 2);
         assert!(table_exists(&pool, "idx_t").await?);
         assert_eq!(
@@ -787,10 +759,8 @@ fn up_blocks_while_lock_held() -> Result<(), Box<dyn Error + 'static>> {
         holder
             .execute("SELECT pg_advisory_lock($1)", &[&key])
             .await?;
-        let migrator = SchemalaneMigrator::new(SchemalaneConfig {
-            migrations_dir,
-            ..Default::default()
-        });
+        let migrator =
+            SchemalaneMigrator::new(SchemalaneConfig::new().with_migrations_dir(migrations_dir));
         assert!(
             tokio::time::timeout(std::time::Duration::from_secs(2), migrator.up(&pool))
                 .await
@@ -816,10 +786,8 @@ fn lock_released_after_successful_up() -> Result<(), Box<dyn Error + 'static>> {
     write_migration(&migrations_dir, "V1__t.sql", "CREATE TABLE t (id int);")?;
     tokio::runtime::Runtime::new()?.block_on(async move {
         let pool = create_pool(&db_url)?;
-        let migrator = SchemalaneMigrator::new(SchemalaneConfig {
-            migrations_dir,
-            ..Default::default()
-        });
+        let migrator =
+            SchemalaneMigrator::new(SchemalaneConfig::new().with_migrations_dir(migrations_dir));
         migrator.up(&pool).await?;
         let client = pool.get().await?;
         let key = derive_advisory_lock_id("public", "flyway_schema_history");
@@ -851,10 +819,8 @@ fn failed_sql_migration_records_failed_row_on_session_connection()
     )?;
     tokio::runtime::Runtime::new()?.block_on(async move {
         let pool = create_pool(&db_url)?;
-        let migrator = SchemalaneMigrator::new(SchemalaneConfig {
-            migrations_dir,
-            ..Default::default()
-        });
+        let migrator =
+            SchemalaneMigrator::new(SchemalaneConfig::new().with_migrations_dir(migrations_dir));
         assert!(matches!(
             migrator.up(&pool).await,
             Err(SchemalaneError::MigrationExecution { .. })
@@ -887,10 +853,8 @@ fn up_works_with_pool_max_size_one() -> Result<(), Box<dyn Error + 'static>> {
     )?;
     tokio::runtime::Runtime::new()?.block_on(async move {
         let pool = create_pool_with_size(&db_url, 1)?;
-        let migrator = SchemalaneMigrator::new(SchemalaneConfig {
-            migrations_dir,
-            ..Default::default()
-        });
+        let migrator =
+            SchemalaneMigrator::new(SchemalaneConfig::new().with_migrations_dir(migrations_dir));
         let report = tokio::time::timeout(std::time::Duration::from_secs(5), migrator.up(&pool))
             .await
             .expect("size-one pool must not deadlock")?;
@@ -911,10 +875,8 @@ fn cancelled_up_releases_detached_session_lock() -> Result<(), Box<dyn Error + '
     write_rust_migration(&migrations_dir, "V1__sleep.rs")?;
     tokio::runtime::Runtime::new()?.block_on(async move {
         let pool = create_pool_with_size(&db_url, 1)?;
-        let mut migrator = SchemalaneMigrator::new(SchemalaneConfig {
-            migrations_dir,
-            ..Default::default()
-        });
+        let mut migrator =
+            SchemalaneMigrator::new(SchemalaneConfig::new().with_migrations_dir(migrations_dir));
         migrator.register_rust_migration(
             "V1__sleep.rs",
             RustMigrationExecutor::new(|_| {

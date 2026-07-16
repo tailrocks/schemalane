@@ -421,13 +421,12 @@ impl EmbeddedRunner {
             .clone()
             .unwrap_or_else(|| PathBuf::from(self.migrations_dir));
 
-        let config = SchemalaneConfig {
-            schema: cli.schema,
-            history_table: cli.history_table,
-            migrations_dir,
-            installed_by: cli.installed_by,
-            advisory_lock_id: cli.advisory_lock_id,
-        };
+        let config = SchemalaneConfig::new()
+            .with_schema(cli.schema)
+            .with_history_table(cli.history_table)
+            .with_migrations_dir(migrations_dir)
+            .with_installed_by(cli.installed_by)
+            .with_advisory_lock_id(cli.advisory_lock_id);
 
         let migrator = (self.build_migrator)(config);
         let verbosity = cli.verbosity.unwrap_or_default();
@@ -705,13 +704,12 @@ async fn run_migrate_cli(args: MigrateArgs) -> Result<(), SchemalaneError> {
 
     let pool = connect_with_feedback(&database_url, db_command.label()).await?;
 
-    let config = SchemalaneConfig {
-        schema,
-        history_table,
-        migrations_dir: PathBuf::from(DEFAULT_SQL_DIR),
-        installed_by,
-        advisory_lock_id,
-    };
+    let config = SchemalaneConfig::new()
+        .with_schema(schema)
+        .with_history_table(history_table)
+        .with_migrations_dir(DEFAULT_SQL_DIR)
+        .with_installed_by(installed_by)
+        .with_advisory_lock_id(advisory_lock_id);
 
     let migrator = SchemalaneMigrator::new(config);
 
@@ -1230,6 +1228,7 @@ fn state_cell(state: MigrationState) -> Cell {
         MigrationState::Failed | MigrationState::Missing | MigrationState::ChecksumMismatch => {
             Color::Red
         }
+        _ => Color::Red,
     };
     Cell::new(label).fg(color).add_attribute(Attribute::Bold)
 }
@@ -1641,25 +1640,22 @@ mod tests {
 
     #[test]
     fn status_json_shape_is_stable() {
-        let report = StatusReport {
-            schema: "public".into(),
-            history_table: "flyway_schema_history".into(),
-            migrations: vec![StatusEntry {
-                version: Some("1".into()),
-                description: "init".into(),
-                migration_type: "SQL".into(),
-                script: "V1__init.sql".into(),
-                checksum: Some(-559_038_737),
-                installed_rank: Some(1),
-                installed_on: Some("2026-01-01 00:00:00".into()),
-                execution_time_ms: Some(12),
-                state: MigrationState::Success,
-            }],
-            summary: StatusSummary {
-                success: 1,
-                ..Default::default()
-            },
-        };
+        let report = StatusReport::new(
+            "public".into(),
+            "flyway_schema_history".into(),
+            vec![StatusEntry::new(
+                Some("1".into()),
+                "init".into(),
+                "SQL".into(),
+                "V1__init.sql".into(),
+                Some(-559_038_737),
+                Some(1),
+                Some("2026-01-01 00:00:00".into()),
+                Some(12),
+                MigrationState::Success,
+            )],
+            StatusSummary::new(1, 0, 0, 0, 0),
+        );
         let value = serde_json::to_value(&report).expect("serialize");
         let entry = &value["migrations"][0];
         assert_eq!(entry["type"], "SQL");
@@ -1804,35 +1800,35 @@ mod tests {
 
     #[test]
     fn latest_database_version_ignores_pending_entries() {
-        let report = StatusReport {
-            schema: "public".to_owned(),
-            history_table: "flyway_schema_history".to_owned(),
-            migrations: vec![
-                StatusEntry {
-                    version: Some("18".to_owned()),
-                    description: "old".to_owned(),
-                    migration_type: "SQL".to_owned(),
-                    script: "V18__old.sql".to_owned(),
-                    checksum: Some(1),
-                    installed_rank: Some(18),
-                    installed_on: None,
-                    execution_time_ms: Some(1),
-                    state: MigrationState::Success,
-                },
-                StatusEntry {
-                    version: Some("19".to_owned()),
-                    description: "new".to_owned(),
-                    migration_type: "SQL".to_owned(),
-                    script: "V19__new.sql".to_owned(),
-                    checksum: Some(2),
-                    installed_rank: None,
-                    installed_on: None,
-                    execution_time_ms: None,
-                    state: MigrationState::Pending,
-                },
+        let report = StatusReport::new(
+            "public".to_owned(),
+            "flyway_schema_history".to_owned(),
+            vec![
+                StatusEntry::new(
+                    Some("18".to_owned()),
+                    "old".to_owned(),
+                    "SQL".to_owned(),
+                    "V18__old.sql".to_owned(),
+                    Some(1),
+                    Some(18),
+                    None,
+                    Some(1),
+                    MigrationState::Success,
+                ),
+                StatusEntry::new(
+                    Some("19".to_owned()),
+                    "new".to_owned(),
+                    "SQL".to_owned(),
+                    "V19__new.sql".to_owned(),
+                    Some(2),
+                    None,
+                    None,
+                    None,
+                    MigrationState::Pending,
+                ),
             ],
-            summary: StatusSummary::default(),
-        };
+            StatusSummary::default(),
+        );
 
         assert_eq!(latest_database_version(&report), Some("18".to_owned()));
     }
@@ -1840,35 +1836,35 @@ mod tests {
     #[test]
     fn latest_database_version_supports_arbitrarily_large_parts() {
         let huge = "99999999999999999999999999999999999999";
-        let report = StatusReport {
-            schema: "public".to_owned(),
-            history_table: "history".to_owned(),
-            migrations: vec![
-                StatusEntry {
-                    version: Some("10".to_owned()),
-                    description: "small".to_owned(),
-                    migration_type: "SQL".to_owned(),
-                    script: "V10__small.sql".to_owned(),
-                    checksum: None,
-                    installed_rank: Some(1),
-                    installed_on: None,
-                    execution_time_ms: Some(1),
-                    state: MigrationState::Success,
-                },
-                StatusEntry {
-                    version: Some(huge.to_owned()),
-                    description: "large".to_owned(),
-                    migration_type: "SQL".to_owned(),
-                    script: format!("V{huge}__large.sql"),
-                    checksum: None,
-                    installed_rank: Some(2),
-                    installed_on: None,
-                    execution_time_ms: Some(1),
-                    state: MigrationState::Success,
-                },
+        let report = StatusReport::new(
+            "public".to_owned(),
+            "history".to_owned(),
+            vec![
+                StatusEntry::new(
+                    Some("10".to_owned()),
+                    "small".to_owned(),
+                    "SQL".to_owned(),
+                    "V10__small.sql".to_owned(),
+                    None,
+                    Some(1),
+                    None,
+                    Some(1),
+                    MigrationState::Success,
+                ),
+                StatusEntry::new(
+                    Some(huge.to_owned()),
+                    "large".to_owned(),
+                    "SQL".to_owned(),
+                    format!("V{huge}__large.sql"),
+                    None,
+                    Some(2),
+                    None,
+                    Some(1),
+                    MigrationState::Success,
+                ),
             ],
-            summary: StatusSummary::default(),
-        };
+            StatusSummary::default(),
+        );
         assert_eq!(latest_database_version(&report).as_deref(), Some(huge));
     }
 

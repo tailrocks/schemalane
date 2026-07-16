@@ -20,10 +20,10 @@ mod tests {
 
     #[test]
     fn build_migrator_registers_rust_migrations() {
-        let migrator = migrations::build_migrator(schemalane_core::SchemalaneConfig {
-            migrations_dir: std::path::PathBuf::from(migrations::MIGRATIONS_DIR),
-            ..Default::default()
-        });
+        let migrator = migrations::build_migrator(
+            schemalane_core::SchemalaneConfig::new()
+                .with_migrations_dir(migrations::MIGRATIONS_DIR),
+        );
         let _ = migrator;
     }
 

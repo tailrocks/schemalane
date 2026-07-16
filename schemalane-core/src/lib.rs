@@ -30,6 +30,7 @@ pub fn derive_advisory_lock_id(schema: &str, history_table: &str) -> i64 {
 }
 
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct SchemalaneConfig {
     pub schema: String,
     pub history_table: String,
@@ -50,7 +51,39 @@ impl Default for SchemalaneConfig {
     }
 }
 
+impl SchemalaneConfig {
+    pub fn new() -> Self {
+        Self::default()
+    }
+    #[must_use]
+    pub fn with_schema(mut self, value: impl Into<String>) -> Self {
+        self.schema = value.into();
+        self
+    }
+    #[must_use]
+    pub fn with_history_table(mut self, value: impl Into<String>) -> Self {
+        self.history_table = value.into();
+        self
+    }
+    #[must_use]
+    pub fn with_migrations_dir(mut self, value: impl Into<PathBuf>) -> Self {
+        self.migrations_dir = value.into();
+        self
+    }
+    #[must_use]
+    pub fn with_installed_by(mut self, value: Option<String>) -> Self {
+        self.installed_by = value;
+        self
+    }
+    #[must_use]
+    pub const fn with_advisory_lock_id(mut self, value: Option<i64>) -> Self {
+        self.advisory_lock_id = value;
+        self
+    }
+}
+
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum SchemalaneError {
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
@@ -109,6 +142,7 @@ impl SchemalaneError {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "PascalCase")]
+#[non_exhaustive]
 pub enum MigrationState {
     Success,
     Pending,
@@ -118,6 +152,7 @@ pub enum MigrationState {
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[non_exhaustive]
 pub struct StatusEntry {
     pub version: Option<String>,
     pub description: String,
@@ -131,7 +166,35 @@ pub struct StatusEntry {
     pub state: MigrationState,
 }
 
+impl StatusEntry {
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        version: Option<String>,
+        description: String,
+        migration_type: String,
+        script: String,
+        checksum: Option<i32>,
+        installed_rank: Option<i32>,
+        installed_on: Option<String>,
+        execution_time_ms: Option<i32>,
+        state: MigrationState,
+    ) -> Self {
+        Self {
+            version,
+            description,
+            migration_type,
+            script,
+            checksum,
+            installed_rank,
+            installed_on,
+            execution_time_ms,
+            state,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Default)]
+#[non_exhaustive]
 pub struct StatusSummary {
     pub success: usize,
     pub pending: usize,
@@ -140,7 +203,26 @@ pub struct StatusSummary {
     pub checksum_mismatch: usize,
 }
 
+impl StatusSummary {
+    pub const fn new(
+        success: usize,
+        pending: usize,
+        failed: usize,
+        missing: usize,
+        checksum_mismatch: usize,
+    ) -> Self {
+        Self {
+            success,
+            pending,
+            failed,
+            missing,
+            checksum_mismatch,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
+#[non_exhaustive]
 pub struct StatusReport {
     pub schema: String,
     pub history_table: String,
@@ -148,7 +230,24 @@ pub struct StatusReport {
     pub summary: StatusSummary,
 }
 
+impl StatusReport {
+    pub fn new(
+        schema: String,
+        history_table: String,
+        migrations: Vec<StatusEntry>,
+        summary: StatusSummary,
+    ) -> Self {
+        Self {
+            schema,
+            history_table,
+            migrations,
+            summary,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
+#[non_exhaustive]
 pub struct AppliedMigration {
     pub version: String,
     pub description: String,
@@ -159,12 +258,14 @@ pub struct AppliedMigration {
 }
 
 #[derive(Debug, Clone, Serialize, Default)]
+#[non_exhaustive]
 pub struct RunReport {
     pub applied: Vec<AppliedMigration>,
     pub skipped: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Default)]
+#[non_exhaustive]
 pub struct InitReport {
     pub root: PathBuf,
     pub created: Vec<PathBuf>,
@@ -172,6 +273,7 @@ pub struct InitReport {
 }
 
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct MigrationInfo {
     pub version: String,
     pub description: String,
@@ -180,6 +282,7 @@ pub struct MigrationInfo {
 }
 
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct MigrationStarted {
     pub migration: MigrationInfo,
     pub index: usize,
@@ -187,6 +290,7 @@ pub struct MigrationStarted {
 }
 
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct MigrationFinished {
     pub migration: MigrationInfo,
     pub index: usize,
@@ -195,6 +299,7 @@ pub struct MigrationFinished {
 }
 
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct MigrationFailed {
     pub migration: MigrationInfo,
     pub index: usize,
@@ -204,6 +309,7 @@ pub struct MigrationFailed {
 }
 
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct SqlStatementStarted {
     pub migration: MigrationInfo,
     pub statement_index: usize,
@@ -215,6 +321,7 @@ pub struct SqlStatementStarted {
 }
 
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct SqlStatementFinished {
     pub migration: MigrationInfo,
     pub statement_index: usize,
@@ -227,6 +334,7 @@ pub struct SqlStatementFinished {
 }
 
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct SqlStatementFailed {
     pub migration: MigrationInfo,
     pub statement_index: usize,
@@ -308,6 +416,7 @@ pub fn init_migration_project(path: &Path, force: bool) -> Result<InitReport, Sc
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum RustTransactionMode {
     NoTransaction,
     Transaction,
@@ -381,27 +490,6 @@ impl SchemalaneMigrator {
     {
         self.rust_migrations
             .insert(normalize_script_key(script.into()), migration);
-    }
-
-    #[must_use]
-    pub fn with_rust_migration<S>(mut self, script: S, migration: RustMigrationExecutor) -> Self
-    where
-        S: Into<String>,
-    {
-        self.register_rust_migration(script, migration);
-        self
-    }
-
-    #[must_use]
-    pub fn with_rust_migrations<I, S>(mut self, migrations: I) -> Self
-    where
-        I: IntoIterator<Item = (S, RustMigrationExecutor)>,
-        S: Into<String>,
-    {
-        for (script, migration) in migrations {
-            self.register_rust_migration(script, migration);
-        }
-        self
     }
 
     /// Transactional SQL migrations commit their history row atomically with the migration.
@@ -1919,59 +2007,12 @@ struct HistoryRow {
     success: bool,
 }
 
-pub fn format_status_table(report: &StatusReport) -> String {
-    let mut lines = Vec::new();
-    lines.push(format!(
-        "schema={}, history_table={}",
-        report.schema, report.history_table
-    ));
-    lines.push(
-        "version | description | type | script | state | rank | execution_time_ms".to_owned(),
-    );
-    lines.push(
-        "--------|-------------|------|--------|-------|------|------------------".to_owned(),
-    );
-
-    for migration in &report.migrations {
-        lines.push(format!(
-            "{} | {} | {} | {} | {:?} | {} | {}",
-            migration.version.as_deref().unwrap_or("-"),
-            migration.description,
-            migration.migration_type,
-            migration.script,
-            migration.state,
-            migration
-                .installed_rank
-                .map_or_else(|| "-".to_owned(), |v| v.to_string()),
-            migration
-                .execution_time_ms
-                .map_or_else(|| "-".to_owned(), |v| v.to_string()),
-        ));
-    }
-
-    lines.push(String::new());
-    lines.push(format!(
-        "summary: success={}, pending={}, failed={}, missing={}, checksum_mismatch={}",
-        report.summary.success,
-        report.summary.pending,
-        report.summary.failed,
-        report.summary.missing,
-        report.summary.checksum_mismatch
-    ));
-
-    lines.join("\n")
-}
-
 pub const fn should_fail_on_pending(report: &StatusReport) -> Result<(), SchemalaneError> {
     if report.summary.pending > 0 {
         Err(SchemalaneError::PendingMigrations(report.summary.pending))
     } else {
         Ok(())
     }
-}
-
-pub fn migrations_dir_exists(path: &Path) -> bool {
-    path.exists()
 }
 
 #[cfg(test)]
