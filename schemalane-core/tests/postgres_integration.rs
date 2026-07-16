@@ -92,6 +92,84 @@ CREATE TABLE price_histories (
 
 #[test]
 #[ignore = "requires Docker daemon"]
+fn characterize_late_migration_is_applied_out_of_order() -> Result<(), Box<dyn Error + 'static>> {
+    let node = Postgres::default().start()?;
+    let db_url = connection_string(&node)?;
+    let temp = TempDir::new()?;
+    let migrations_dir = temp.path().join("migrations");
+    fs::create_dir_all(&migrations_dir)?;
+    write_migration(
+        &migrations_dir,
+        "V1__first.sql",
+        "CREATE TABLE first_table (id int);",
+    )?;
+    write_migration(
+        &migrations_dir,
+        "V3__third.sql",
+        "CREATE TABLE third_table (id int);",
+    )?;
+
+    tokio::runtime::Runtime::new()?.block_on(async move {
+        let pool = create_pool(&db_url)?;
+        let migrator = SchemalaneMigrator::new(
+            SchemalaneConfig::new().with_migrations_dir(&migrations_dir),
+        );
+        migrator.up(&pool).await?;
+
+        write_migration(
+            &migrations_dir,
+            "V2__late.sql",
+            "CREATE TABLE late_table (id int);",
+        )?;
+        let before = migrator.status(&pool).await?;
+        assert_eq!(
+            before
+                .migrations
+                .iter()
+                .find(|entry| entry.script == "V2__late.sql")
+                .map(|entry| entry.state),
+            Some(MigrationState::Pending)
+        );
+
+        let report = migrator.up(&pool).await?;
+        assert_eq!(report.applied.len(), 1);
+        assert_eq!(report.applied[0].script, "V2__late.sql");
+        let after = migrator.status(&pool).await?;
+        assert_eq!(
+            after
+                .migrations
+                .iter()
+                .find(|entry| entry.script == "V2__late.sql")
+                .map(|entry| entry.state),
+            Some(MigrationState::Success)
+        );
+
+        let client = pool.get().await?;
+        let rows = client
+            .query(
+                "SELECT installed_rank, script FROM public.flyway_schema_history ORDER BY installed_rank",
+                &[],
+            )
+            .await?;
+        let history = rows
+            .iter()
+            .map(|row| (row.get::<_, i32>(0), row.get::<_, String>(1)))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            history,
+            vec![
+                (1, "V1__first.sql".to_owned()),
+                (2, "V3__third.sql".to_owned()),
+                (3, "V2__late.sql".to_owned()),
+            ]
+        );
+        Ok::<(), Box<dyn Error + 'static>>(())
+    })?;
+    Ok(())
+}
+
+#[test]
+#[ignore = "requires Docker daemon"]
 fn status_sees_history_in_mixed_case_schema() -> Result<(), Box<dyn Error + 'static>> {
     let node = Postgres::default().start()?;
     let db_url = connection_string(&node)?;
