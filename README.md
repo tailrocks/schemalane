@@ -13,10 +13,26 @@ Repository layout:
 
 Schemalane CLI supports:
 
-- `schemalane migrate init`
+- `schemalane init`
 - `schemalane migrate up`
 - `schemalane migrate status`
+- `schemalane migrate validate`
 - `schemalane migrate fresh`
+
+## Testing
+
+Fast unit tests (no Docker):
+
+```sh
+cargo test --workspace
+```
+
+Full suite including PostgreSQL integration tests (requires a running Docker daemon;
+testcontainers starts a disposable Postgres per test):
+
+```sh
+cargo test -p schemalane-core --test postgres_integration -- --include-ignored
+```
 
 ## Local CLI Testing
 
@@ -24,7 +40,7 @@ Install `schemalane` locally and test it as a standalone command:
 
 ```sh
 # from workspace root
-cargo install --path backend-rust/schemalane/schemalane-cli --force
+cargo install --path schemalane-cli --force
 
 # confirm binary is available
 schemalane --help
@@ -33,25 +49,17 @@ schemalane --help
 Validate the full flow:
 
 ```sh
-# start local registry via compose
-./docker-up-kellnr.sh
-
 # scaffold migration crate
-schemalane migrate init --path ./migration
+schemalane init --path ./migration
 
-# generated Cargo.toml uses registry = "kellnr" for schemalane-core/cli.
-# ensure ~/.cargo/config.toml contains:
-# [registries.kellnr]
-# index = "sparse+http://localhost:8000/api/v1/crates/"
-#
-# if you do not want to publish schemalane crates yet, replace generated
-# schemalane-core/schemalane-cli dependencies with local path dependencies.
+# The generated Cargo.toml fetches Schemalane directly from GitHub.
+# For local development, use its commented path-dependency alternatives.
 
 # run migration binary directly
-cargo run --manifest-path ./migration/Cargo.toml -- --database-url "$DATABASE_URL" up
+DATABASE_URL="$DATABASE_URL" cargo run --manifest-path ./migration/Cargo.toml -- up
 
 # inspect status
-cargo run --manifest-path ./migration/Cargo.toml -- --database-url "$DATABASE_URL" status
+DATABASE_URL="$DATABASE_URL" cargo run --manifest-path ./migration/Cargo.toml -- status
 
 # run through installed schemalane CLI (defaults to ./migration + implicit `up`)
 DATABASE_URL="$DATABASE_URL" schemalane migrate
@@ -62,7 +70,7 @@ DATABASE_URL="$DATABASE_URL" schemalane migrate
 Generate a migration crate:
 
 ```sh
-cargo run -p schemalane-cli -- migrate init --path ./migration
+cargo run -p schemalane-cli -- init --path ./migration
 ```
 
 This creates:
@@ -76,13 +84,13 @@ This creates:
 Run it from your parent project:
 
 ```sh
-cargo run --manifest-path ./migration/Cargo.toml -- --database-url "$DATABASE_URL" up
+DATABASE_URL="$DATABASE_URL" cargo run --manifest-path ./migration/Cargo.toml -- up
 ```
 
 ## Direct CLI Usage
 
 ```sh
-cargo run -p schemalane-cli -- migrate --database-url "$DATABASE_URL" up
+DATABASE_URL="$DATABASE_URL" cargo run -p schemalane-cli -- migrate up
 ```
 
 Use a migration crate path:
@@ -92,12 +100,49 @@ cargo run -p schemalane-cli -- migrate -d ./migration up
 ```
 
 ```sh
-cargo run -p schemalane-cli -- migrate --database-url "$DATABASE_URL" status
+DATABASE_URL="$DATABASE_URL" cargo run -p schemalane-cli -- migrate status
 ```
 
+Validate local migrations against database history without applying anything:
+
 ```sh
-cargo run -p schemalane-cli -- migrate --database-url "$DATABASE_URL" fresh --yes
+DATABASE_URL="$DATABASE_URL" cargo run -p schemalane-cli -- migrate validate
 ```
+
+`validate` rejects failed history with exit code 4 and missing or checksum-mismatched
+history with exit code 3. Pending migrations are valid unless
+`--fail-on-pending` is set. `--format table|json` controls output; JSON wraps the
+status report with `"validation": { "valid": ... }`.
+
+Preview the exact pending `up` plan without applying it:
+
+```sh
+DATABASE_URL="$DATABASE_URL" cargo run -p schemalane-cli -- migrate up --dry-run
+```
+
+Dry-run performs the same discovery, history, drift, SQL parsing, and transaction-mode
+gates as `up`, then prints pending SQL and transaction modes. Rust source is not
+previewable. `--format json` emits the structured plan. Dry-run does not acquire the
+advisory lock, so its result can become stale if another runner migrates concurrently.
+
+```sh
+DATABASE_URL="$DATABASE_URL" cargo run -p schemalane-cli -- migrate fresh --confirm yes
+```
+
+## PostgreSQL TLS
+
+Schemalane reads `sslmode` from the PostgreSQL URL:
+
+- `sslmode=disable` uses plaintext.
+- `sslmode=prefer` uses TLS when the server offers it, otherwise falls back to plaintext.
+- `sslmode=require` requires TLS.
+
+TLS server certificates are verified against the operating system trust store for both
+`prefer` and `require`; a server offering TLS with an untrusted certificate is rejected.
+Current URL parsing does not support `verify-ca` or `verify-full`. Custom CA files and
+client certificates are also not supported yet. Channel binding accepts
+`channel_binding=disable|prefer|require`; the rustls connector supplies the
+`tls-server-end-point` binding when TLS is active and the certificate supports it.
 
 ## Notes
 

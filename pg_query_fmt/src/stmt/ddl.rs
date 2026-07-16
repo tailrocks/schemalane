@@ -1,21 +1,16 @@
+use std::fmt::Write;
+
 use pg_query::protobuf::node::Node;
 use pg_query::protobuf::{
     AlterTableStmt, AlterTableType, ColumnDef, ConstrType, Constraint, CreateEnumStmt,
-    CreateFunctionStmt, CreateStmt, CteMaterialize, DeleteStmt, DropBehavior,
-    FunctionParameterMode, IndexStmt, InsertStmt, JoinType, OnConflictAction, SelectStmt,
-    SetOperation, UpdateStmt, ViewStmt,
+    CreateFunctionStmt, CreateStmt, DropBehavior, FunctionParameterMode, IndexStmt, ViewStmt,
 };
 
-use std::fmt::Write;
+use crate::expr::{fmt_index_elem, fmt_node, fmt_range_var, fmt_type_name, quote_identifier};
+use crate::{FormatError, INDENT};
 
-use crate::FormatError;
-use crate::INDENT;
-use crate::expr::{
-    fmt_index_elem, fmt_node, fmt_range_var, fmt_res_target_select, fmt_res_target_update,
-    fmt_sort_by, fmt_type_name, fmt_window_def,
-};
-
-// ── CREATE TYPE ... AS ENUM ─────────────────────────────────────────────────
+use super::table_body::{ColumnParts, TableItem, column_widths, fmt_column_line, fmt_table_body};
+use super::{name_list_to_string, node_string_list};
 
 pub(crate) fn fmt_create_enum(stmt: &CreateEnumStmt) -> Result<String, FormatError> {
     let type_name = name_list_to_string(&stmt.type_name);
@@ -90,117 +85,11 @@ pub(crate) fn fmt_create_table(stmt: &CreateStmt) -> Result<String, FormatError>
         }
     }
 
-    if all_items.len() <= 1 {
-        let single = match &all_items[0] {
-            TableItem::Column(idx) => {
-                let col = &columns[*idx];
-                let mut s = format!("{} {}", col.name, col.type_str);
-                if let Some(ref def) = col.default_expr {
-                    s.push(' ');
-                    s.push_str(def);
-                }
-                if !col.constraints.is_empty() {
-                    s.push(' ');
-                    s.push_str(&col.constraints);
-                }
-                s
-            }
-            TableItem::Constraint(text) => text.clone(),
-        };
-        return Ok(format!("{header} ({single})"));
-    }
-
-    let max_name = columns.iter().map(|c| c.name.len()).max().unwrap_or(0);
-    let max_type = columns.iter().map(|c| c.type_str.len()).max().unwrap_or(0);
-    let max_default = columns
-        .iter()
-        .map(|c| c.default_expr.as_ref().map_or(0, String::len))
-        .max()
-        .unwrap_or(0);
-
-    let total_items = all_items.len();
-    let mut out = String::with_capacity(total_items * 80);
-    out.push_str(&header);
-    out.push_str(" (\n");
-
-    for (i, table_item) in all_items.iter().enumerate() {
-        out.push_str(INDENT);
-        match table_item {
-            TableItem::Column(col_idx) => {
-                out.push_str(&fmt_column_line(
-                    &columns[*col_idx],
-                    max_name,
-                    max_type,
-                    max_default,
-                ));
-            }
-            TableItem::Constraint(text) => {
-                out.push_str(text);
-            }
-        }
-
-        if i + 1 < total_items {
-            out.push(',');
-        }
-        out.push('\n');
-    }
-
-    out.push(')');
-    Ok(out)
-}
-
-enum TableItem {
-    Column(usize),
-    Constraint(String),
-}
-
-struct ColumnParts {
-    name: String,
-    type_str: String,
-    default_expr: Option<String>,
-    constraints: String,
-}
-
-/// Format a single column definition with padded alignment.
-fn fmt_column_line(
-    col: &ColumnParts,
-    max_name: usize,
-    max_type: usize,
-    max_default: usize,
-) -> String {
-    let mut line = String::new();
-
-    line.push_str(&col.name);
-    line.push_str(&" ".repeat(max_name - col.name.len()));
-    line.push(' ');
-
-    line.push_str(&col.type_str);
-
-    if max_default > 0 {
-        if let Some(ref def) = col.default_expr {
-            line.push_str(&" ".repeat(max_type - col.type_str.len()));
-            line.push(' ');
-            line.push_str(def);
-            if !col.constraints.is_empty() {
-                line.push_str(&" ".repeat(max_default - def.len()));
-            }
-        } else if !col.constraints.is_empty() {
-            line.push_str(&" ".repeat(max_type - col.type_str.len() + 1 + max_default));
-        }
-    } else if !col.constraints.is_empty() {
-        line.push_str(&" ".repeat(max_type - col.type_str.len()));
-    }
-
-    if !col.constraints.is_empty() {
-        line.push(' ');
-        line.push_str(&col.constraints);
-    }
-
-    line.trim_end().to_string()
+    Ok(fmt_table_body(&header, &columns, &all_items))
 }
 
 fn fmt_column_def_parts(cd: &ColumnDef) -> Result<ColumnParts, FormatError> {
-    let name = cd.colname.clone();
+    let name = quote_identifier(&cd.colname);
     let type_str = cd
         .type_name
         .as_ref()
@@ -411,56 +300,7 @@ pub(crate) fn fmt_create_foreign_table(
                 }
             }
         }
-
-        if all_items.len() <= 1 {
-            let single = match &all_items[0] {
-                TableItem::Column(idx) => {
-                    let col = &columns[*idx];
-                    let mut s = format!("{} {}", col.name, col.type_str);
-                    if let Some(ref def) = col.default_expr {
-                        s.push(' ');
-                        s.push_str(def);
-                    }
-                    if !col.constraints.is_empty() {
-                        s.push(' ');
-                        s.push_str(&col.constraints);
-                    }
-                    s
-                }
-                TableItem::Constraint(text) => text.clone(),
-            };
-            header = format!("{header} ({single})");
-        } else {
-            let max_name = columns.iter().map(|c| c.name.len()).max().unwrap_or(0);
-            let max_type = columns.iter().map(|c| c.type_str.len()).max().unwrap_or(0);
-            let max_default = columns
-                .iter()
-                .map(|c| c.default_expr.as_ref().map_or(0, String::len))
-                .max()
-                .unwrap_or(0);
-
-            let total_items = all_items.len();
-            header.push_str(" (\n");
-            for (i, table_item) in all_items.iter().enumerate() {
-                header.push_str(INDENT);
-                match table_item {
-                    TableItem::Column(col_idx) => {
-                        header.push_str(&fmt_column_line(
-                            &columns[*col_idx],
-                            max_name,
-                            max_type,
-                            max_default,
-                        ));
-                    }
-                    TableItem::Constraint(text) => header.push_str(text),
-                }
-                if i + 1 < total_items {
-                    header.push(',');
-                }
-                header.push('\n');
-            }
-            header.push(')');
-        }
+        header = fmt_table_body(&header, &columns, &all_items);
     }
 
     // SERVER
@@ -575,7 +415,8 @@ pub(crate) fn fmt_alter_table(stmt: &AlterTableStmt) -> Result<String, FormatErr
         .map(fmt_range_var)
         .unwrap_or_default();
 
-    let header = format!("ALTER TABLE {relation}");
+    let object_type = crate::preview::object_type_label(stmt.objtype);
+    let header = format!("ALTER {object_type} {relation}");
 
     // First pass: classify commands — extract ColumnParts for ADD COLUMN,
     // format everything else as strings.
@@ -608,23 +449,7 @@ pub(crate) fn fmt_alter_table(stmt: &AlterTableStmt) -> Result<String, FormatErr
         .collect();
 
     let align = add_columns.len() > 1;
-    let (max_name, max_type, max_default) = if align {
-        (
-            add_columns.iter().map(|c| c.name.len()).max().unwrap_or(0),
-            add_columns
-                .iter()
-                .map(|c| c.type_str.len())
-                .max()
-                .unwrap_or(0),
-            add_columns
-                .iter()
-                .map(|c| c.default_expr.as_ref().map_or(0, String::len))
-                .max()
-                .unwrap_or(0),
-        )
-    } else {
-        (0, 0, 0)
-    };
+    let widths = column_widths(add_columns.iter().copied());
 
     let total = items.len();
     let mut out = header;
@@ -635,7 +460,7 @@ pub(crate) fn fmt_alter_table(stmt: &AlterTableStmt) -> Result<String, FormatErr
         match item {
             AlterItem::AddColumn(col) if align => {
                 out.push_str("ADD COLUMN ");
-                out.push_str(&fmt_column_line(col, max_name, max_type, max_default));
+                out.push_str(&fmt_column_line(col, widths));
             }
             AlterItem::AddColumn(col) => {
                 let mut s = format!("ADD COLUMN {} {}", col.name, col.type_str);
@@ -791,7 +616,7 @@ fn fmt_alter_table_cmd(cmd: &pg_query::protobuf::AlterTableCmd) -> Result<String
 }
 
 fn fmt_column_def_inline(cd: &ColumnDef) -> Result<String, FormatError> {
-    let mut parts = vec![cd.colname.clone()];
+    let mut parts = vec![quote_identifier(&cd.colname)];
 
     if let Some(ref tn) = cd.type_name {
         parts.push(fmt_type_name(tn)?);
@@ -830,520 +655,6 @@ fn fmt_column_def_inline(cd: &ColumnDef) -> Result<String, FormatError> {
 
     Ok(parts.join(" "))
 }
-
-// ── SELECT ──────────────────────────────────────────────────────────────────
-
-pub(crate) fn fmt_select_stmt(stmt: &SelectStmt) -> Result<String, FormatError> {
-    // Handle set operations (UNION / INTERSECT / EXCEPT)
-    let set_op = SetOperation::try_from(stmt.op).unwrap_or(SetOperation::Undefined);
-    if matches!(
-        set_op,
-        SetOperation::SetopUnion | SetOperation::SetopIntersect | SetOperation::SetopExcept
-    ) {
-        return fmt_set_operation(stmt, set_op);
-    }
-
-    // Handle VALUES lists
-    if !stmt.values_lists.is_empty() {
-        return fmt_values_clause(stmt);
-    }
-
-    let targets: Vec<String> = stmt
-        .target_list
-        .iter()
-        .map(|n| match n.node.as_ref() {
-            Some(Node::ResTarget(rt)) => fmt_res_target_select(rt),
-            _ => fmt_node(n),
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-
-    let mut clauses: Vec<String> = Vec::new();
-
-    // WITH clause
-    if let Some(ref with) = stmt.with_clause {
-        clauses.push(fmt_with_clause(with)?);
-    }
-
-    // SELECT [DISTINCT]
-    let select_keyword = if stmt.distinct_clause.is_empty() {
-        "SELECT"
-    } else {
-        "SELECT DISTINCT"
-    };
-    clauses.push(format!("{select_keyword} {}", targets.join(", ")));
-
-    if !stmt.from_clause.is_empty() {
-        let from_items: Vec<String> = stmt
-            .from_clause
-            .iter()
-            .map(fmt_from_item)
-            .collect::<Result<_, _>>()?;
-        clauses.push(format!("FROM {}", from_items.join(", ")));
-    }
-
-    if let Some(ref wc) = stmt.where_clause {
-        clauses.push(format!("WHERE {}", fmt_node(wc)?));
-    }
-
-    if !stmt.group_clause.is_empty() {
-        let groups: Vec<String> = stmt
-            .group_clause
-            .iter()
-            .map(fmt_node)
-            .collect::<Result<_, _>>()?;
-        clauses.push(format!("GROUP BY {}", groups.join(", ")));
-    }
-
-    if let Some(ref hc) = stmt.having_clause {
-        clauses.push(format!("HAVING {}", fmt_node(hc)?));
-    }
-
-    // WINDOW clause
-    if !stmt.window_clause.is_empty() {
-        let wins: Vec<String> = stmt
-            .window_clause
-            .iter()
-            .filter_map(|n| match n.node.as_ref() {
-                Some(Node::WindowDef(wd)) => {
-                    let body = fmt_window_def(wd).ok()?;
-                    Some(format!("{} AS ({body})", wd.name))
-                }
-                _ => None,
-            })
-            .collect();
-        if !wins.is_empty() {
-            clauses.push(format!("WINDOW {}", wins.join(", ")));
-        }
-    }
-
-    if !stmt.sort_clause.is_empty() {
-        let sorts: Vec<String> = stmt
-            .sort_clause
-            .iter()
-            .map(|n| match n.node.as_ref() {
-                Some(Node::SortBy(sb)) => fmt_sort_by(sb),
-                _ => fmt_node(n),
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        clauses.push(format!("ORDER BY {}", sorts.join(", ")));
-    }
-
-    if let Some(ref lc) = stmt.limit_count {
-        clauses.push(format!("LIMIT {}", fmt_node(lc)?));
-    }
-
-    if let Some(ref lo) = stmt.limit_offset {
-        clauses.push(format!("OFFSET {}", fmt_node(lo)?));
-    }
-
-    Ok(clauses.join("\n"))
-}
-
-fn fmt_set_operation(stmt: &SelectStmt, set_op: SetOperation) -> Result<String, FormatError> {
-    let left = stmt
-        .larg
-        .as_ref()
-        .map(|s| fmt_select_stmt(s))
-        .transpose()?
-        .unwrap_or_default();
-
-    let op_keyword = match set_op {
-        SetOperation::SetopIntersect => "INTERSECT",
-        SetOperation::SetopExcept => "EXCEPT",
-        _ => "UNION",
-    };
-
-    let modifier = if stmt.all { " ALL" } else { "" };
-
-    let right = stmt
-        .rarg
-        .as_ref()
-        .map(|s| fmt_select_stmt(s))
-        .transpose()?
-        .unwrap_or_default();
-
-    Ok(format!("{left}\n{op_keyword}{modifier}\n{right}"))
-}
-
-fn fmt_values_clause(stmt: &SelectStmt) -> Result<String, FormatError> {
-    let rows: Vec<String> = stmt
-        .values_lists
-        .iter()
-        .map(|row| {
-            if let Some(Node::List(l)) = row.node.as_ref() {
-                let items: Vec<String> = l
-                    .items
-                    .iter()
-                    .map(fmt_node)
-                    .collect::<Result<Vec<_>, _>>()?;
-                Ok(format!("({})", items.join(", ")))
-            } else {
-                fmt_node(row)
-            }
-        })
-        .collect::<Result<_, FormatError>>()?;
-
-    Ok(format!("VALUES {}", rows.join(", ")))
-}
-
-fn fmt_from_item(node: &pg_query::protobuf::Node) -> Result<String, FormatError> {
-    match node.node.as_ref() {
-        Some(Node::RangeVar(rv)) => Ok(fmt_range_var(rv)),
-        Some(Node::JoinExpr(je)) => fmt_join_expr(je),
-        Some(Node::RangeSubselect(rs)) => {
-            let mut s = String::new();
-            if rs.lateral {
-                s.push_str("LATERAL ");
-            }
-            if let Some(ref subquery) = rs.subquery {
-                s.push('(');
-                s.push_str(&fmt_node(subquery)?);
-                s.push(')');
-            }
-            if let Some(ref alias) = rs.alias {
-                s.push_str(" AS ");
-                s.push_str(&alias.aliasname);
-            }
-            Ok(s)
-        }
-        Some(Node::RangeFunction(rf)) => fmt_range_function(rf),
-        _ => fmt_node(node),
-    }
-}
-
-fn fmt_range_function(rf: &pg_query::protobuf::RangeFunction) -> Result<String, FormatError> {
-    let mut s = String::new();
-    if rf.lateral {
-        s.push_str("LATERAL ");
-    }
-
-    let func_items: Vec<String> = rf
-        .functions
-        .iter()
-        .map(|n| {
-            if let Some(Node::List(l)) = n.node.as_ref()
-                && let Some(first) = l.items.first()
-            {
-                return fmt_node(first);
-            }
-            fmt_node(n)
-        })
-        .collect::<Result<_, _>>()?;
-    s.push_str(&func_items.join(", "));
-
-    if rf.ordinality {
-        s.push_str(" WITH ORDINALITY");
-    }
-
-    if let Some(ref alias) = rf.alias {
-        s.push_str(" AS ");
-        s.push_str(&alias.aliasname);
-        if !alias.colnames.is_empty() {
-            let cols = node_string_list(&alias.colnames);
-            let _ = write!(s, " ({})", cols.join(", "));
-        }
-    }
-
-    Ok(s)
-}
-
-fn fmt_join_expr(je: &pg_query::protobuf::JoinExpr) -> Result<String, FormatError> {
-    let left = je
-        .larg
-        .as_ref()
-        .map(|n| fmt_from_item(n))
-        .transpose()?
-        .unwrap_or_default();
-
-    let join_keyword = if je.is_natural { "NATURAL " } else { "" };
-
-    let join_type = match JoinType::try_from(je.jointype).unwrap_or(JoinType::Undefined) {
-        JoinType::JoinLeft => "LEFT JOIN",
-        JoinType::JoinFull => "FULL JOIN",
-        JoinType::JoinRight => "RIGHT JOIN",
-        _ => "JOIN",
-    };
-
-    let right = je
-        .rarg
-        .as_ref()
-        .map(|n| fmt_from_item(n))
-        .transpose()?
-        .unwrap_or_default();
-
-    let mut result = format!("{left} {join_keyword}{join_type} {right}");
-
-    if let Some(ref quals) = je.quals {
-        let _ = write!(result, " ON {}", fmt_node(quals)?);
-    }
-
-    if !je.using_clause.is_empty() {
-        let cols = node_string_list(&je.using_clause);
-        let _ = write!(result, " USING ({})", cols.join(", "));
-    }
-
-    if let Some(ref alias) = je.alias
-        && !alias.aliasname.is_empty()
-    {
-        let _ = write!(result, " AS {}", alias.aliasname);
-    }
-
-    Ok(result)
-}
-
-// ── WITH (CTE) ─────────────────────────────────────────────────────────────
-
-fn fmt_with_clause(with: &pg_query::protobuf::WithClause) -> Result<String, FormatError> {
-    let keyword = if with.recursive {
-        "WITH RECURSIVE"
-    } else {
-        "WITH"
-    };
-
-    let ctes: Vec<String> = with
-        .ctes
-        .iter()
-        .filter_map(|n| match n.node.as_ref() {
-            Some(Node::CommonTableExpr(cte)) => Some(fmt_common_table_expr(cte)),
-            _ => None,
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-
-    Ok(format!("{keyword} {}", ctes.join(", ")))
-}
-
-fn fmt_common_table_expr(cte: &pg_query::protobuf::CommonTableExpr) -> Result<String, FormatError> {
-    let mut s = cte.ctename.clone();
-
-    if !cte.aliascolnames.is_empty() {
-        let cols = node_string_list(&cte.aliascolnames);
-        let _ = write!(s, " ({})", cols.join(", "));
-    }
-
-    s.push_str(" AS ");
-
-    // Materialization hint
-    match CteMaterialize::try_from(cte.ctematerialized)
-        .unwrap_or(CteMaterialize::CtematerializeUndefined)
-    {
-        CteMaterialize::Always => s.push_str("MATERIALIZED "),
-        CteMaterialize::Never => s.push_str("NOT MATERIALIZED "),
-        _ => {}
-    }
-
-    s.push('(');
-    if let Some(ref query) = cte.ctequery {
-        s.push_str(&fmt_node(query)?);
-    }
-    s.push(')');
-
-    Ok(s)
-}
-
-// ── INSERT ──────────────────────────────────────────────────────────────────
-
-pub(crate) fn fmt_insert_stmt(stmt: &InsertStmt) -> Result<String, FormatError> {
-    let relation = stmt
-        .relation
-        .as_ref()
-        .map(fmt_range_var)
-        .unwrap_or_default();
-
-    let mut out = format!("INSERT INTO {relation}");
-
-    // Column list
-    if !stmt.cols.is_empty() {
-        let cols: Vec<String> = stmt
-            .cols
-            .iter()
-            .map(|n| match n.node.as_ref() {
-                Some(Node::ResTarget(rt)) => Ok(rt.name.clone()),
-                _ => fmt_node(n),
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-
-        if cols.len() <= 1 {
-            let _ = write!(out, " ({})", cols.join(", "));
-        } else {
-            out.push_str(" (\n");
-            for (i, col) in cols.iter().enumerate() {
-                out.push_str(INDENT);
-                out.push_str(col);
-                if i + 1 < cols.len() {
-                    out.push(',');
-                }
-                out.push('\n');
-            }
-            out.push(')');
-        }
-    }
-
-    // Source (VALUES or SELECT)
-    if let Some(ref select_node) = stmt.select_stmt
-        && let Some(Node::SelectStmt(select)) = select_node.node.as_ref()
-    {
-        let source = fmt_select_stmt(select)?;
-        out.push('\n');
-        out.push_str(&source);
-    }
-
-    // ON CONFLICT
-    if let Some(ref oc) = stmt.on_conflict_clause {
-        out.push('\n');
-        out.push_str(&fmt_on_conflict(oc)?);
-    }
-
-    // RETURNING
-    if !stmt.returning_list.is_empty() {
-        let ret: Vec<String> = stmt
-            .returning_list
-            .iter()
-            .map(|n| match n.node.as_ref() {
-                Some(Node::ResTarget(rt)) => fmt_res_target_select(rt),
-                _ => fmt_node(n),
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        out.push('\n');
-        let _ = write!(out, "RETURNING {}", ret.join(", "));
-    }
-
-    Ok(out)
-}
-
-fn fmt_on_conflict(oc: &pg_query::protobuf::OnConflictClause) -> Result<String, FormatError> {
-    let mut s = "ON CONFLICT".to_string();
-
-    if let Some(ref infer) = oc.infer {
-        if !infer.index_elems.is_empty() {
-            let elems: Vec<String> = infer
-                .index_elems
-                .iter()
-                .map(|n| match n.node.as_ref() {
-                    Some(Node::IndexElem(ie)) => fmt_index_elem(ie),
-                    _ => fmt_node(n),
-                })
-                .collect::<Result<Vec<_>, _>>()?;
-            let _ = write!(s, " ({})", elems.join(", "));
-        } else if !infer.conname.is_empty() {
-            let _ = write!(s, " ON CONSTRAINT {}", infer.conname);
-        }
-    }
-
-    match OnConflictAction::try_from(oc.action).unwrap_or(OnConflictAction::Undefined) {
-        OnConflictAction::OnconflictNothing => s.push_str(" DO NOTHING"),
-        OnConflictAction::OnconflictUpdate => {
-            s.push_str(" DO UPDATE SET ");
-            let sets: Vec<String> = oc
-                .target_list
-                .iter()
-                .map(|n| match n.node.as_ref() {
-                    Some(Node::ResTarget(rt)) => fmt_res_target_update(rt),
-                    _ => fmt_node(n),
-                })
-                .collect::<Result<Vec<_>, _>>()?;
-            s.push_str(&sets.join(", "));
-
-            if let Some(ref wc) = oc.where_clause {
-                let _ = write!(s, " WHERE {}", fmt_node(wc)?);
-            }
-        }
-        _ => {}
-    }
-
-    Ok(s)
-}
-
-// ── UPDATE ──────────────────────────────────────────────────────────────────
-
-pub(crate) fn fmt_update_stmt(stmt: &UpdateStmt) -> Result<String, FormatError> {
-    let relation = stmt
-        .relation
-        .as_ref()
-        .map(fmt_range_var)
-        .unwrap_or_default();
-
-    let mut clauses: Vec<String> = Vec::new();
-    clauses.push(format!("UPDATE {relation}"));
-
-    let sets: Vec<String> = stmt
-        .target_list
-        .iter()
-        .map(|n| match n.node.as_ref() {
-            Some(Node::ResTarget(rt)) => fmt_res_target_update(rt),
-            _ => fmt_node(n),
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    clauses.push(format!("SET {}", sets.join(", ")));
-
-    if !stmt.from_clause.is_empty() {
-        let from_items: Vec<String> = stmt
-            .from_clause
-            .iter()
-            .map(fmt_from_item)
-            .collect::<Result<_, _>>()?;
-        clauses.push(format!("FROM {}", from_items.join(", ")));
-    }
-
-    if let Some(ref wc) = stmt.where_clause {
-        clauses.push(format!("WHERE {}", fmt_node(wc)?));
-    }
-
-    if !stmt.returning_list.is_empty() {
-        let ret: Vec<String> = stmt
-            .returning_list
-            .iter()
-            .map(|n| match n.node.as_ref() {
-                Some(Node::ResTarget(rt)) => fmt_res_target_select(rt),
-                _ => fmt_node(n),
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        clauses.push(format!("RETURNING {}", ret.join(", ")));
-    }
-
-    Ok(clauses.join("\n"))
-}
-
-// ── DELETE ──────────────────────────────────────────────────────────────────
-
-pub(crate) fn fmt_delete_stmt(stmt: &DeleteStmt) -> Result<String, FormatError> {
-    let relation = stmt
-        .relation
-        .as_ref()
-        .map(fmt_range_var)
-        .unwrap_or_default();
-
-    let mut clauses: Vec<String> = Vec::new();
-    clauses.push(format!("DELETE FROM {relation}"));
-
-    if !stmt.using_clause.is_empty() {
-        let using_items: Vec<String> = stmt
-            .using_clause
-            .iter()
-            .map(fmt_from_item)
-            .collect::<Result<_, _>>()?;
-        clauses.push(format!("USING {}", using_items.join(", ")));
-    }
-
-    if let Some(ref wc) = stmt.where_clause {
-        clauses.push(format!("WHERE {}", fmt_node(wc)?));
-    }
-
-    if !stmt.returning_list.is_empty() {
-        let ret: Vec<String> = stmt
-            .returning_list
-            .iter()
-            .map(|n| match n.node.as_ref() {
-                Some(Node::ResTarget(rt)) => fmt_res_target_select(rt),
-                _ => fmt_node(n),
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        clauses.push(format!("RETURNING {}", ret.join(", ")));
-    }
-
-    Ok(clauses.join("\n"))
-}
-
-// ── CREATE VIEW ─────────────────────────────────────────────────────────────
 
 pub(crate) fn fmt_view_stmt(stmt: &ViewStmt) -> Result<String, FormatError> {
     let mut header = if stmt.replace {
@@ -1476,12 +787,16 @@ pub(crate) fn fmt_create_function(stmt: &CreateFunctionStmt) -> Result<String, F
     // Assemble
     if let Some(body_text) = body {
         let trimmed_body = body_text.trim_start_matches('\n');
-        header.push_str(" AS $$\n");
+        let delimiter = available_dollar_quote(trimmed_body);
+        header.push_str(" AS ");
+        header.push_str(&delimiter);
+        header.push('\n');
         header.push_str(trimmed_body);
         if !trimmed_body.ends_with('\n') {
             header.push('\n');
         }
-        header.push_str("$$ LANGUAGE ");
+        header.push_str(&delimiter);
+        header.push_str(" LANGUAGE ");
         header.push_str(&language.unwrap_or_else(|| "sql".into()));
     } else if let Some(lang) = language {
         header.push_str(" LANGUAGE ");
@@ -1494,6 +809,23 @@ pub(crate) fn fmt_create_function(stmt: &CreateFunctionStmt) -> Result<String, F
     }
 
     Ok(header)
+}
+
+fn available_dollar_quote(body: &str) -> String {
+    if !body.contains("$$") {
+        return "$$".to_owned();
+    }
+    for suffix in 0_u32.. {
+        let tag = if suffix == 0 {
+            "$fn$".to_owned()
+        } else {
+            format!("$fn{suffix}$")
+        };
+        if !body.contains(&tag) {
+            return tag;
+        }
+    }
+    unreachable!("u32 tag space exhausted")
 }
 
 fn fmt_function_param(fp: &pg_query::protobuf::FunctionParameter) -> Result<String, FormatError> {
@@ -1521,27 +853,4 @@ fn fmt_function_param(fp: &pg_query::protobuf::FunctionParameter) -> Result<Stri
     }
 
     Ok(parts.join(" "))
-}
-
-// ── Helpers ─────────────────────────────────────────────────────────────────
-
-fn name_list_to_string(nodes: &[pg_query::protobuf::Node]) -> String {
-    nodes
-        .iter()
-        .filter_map(|n| match n.node.as_ref() {
-            Some(Node::String(s)) => Some(s.sval.clone()),
-            _ => None,
-        })
-        .collect::<Vec<_>>()
-        .join(".")
-}
-
-fn node_string_list(nodes: &[pg_query::protobuf::Node]) -> Vec<String> {
-    nodes
-        .iter()
-        .filter_map(|n| match n.node.as_ref() {
-            Some(Node::String(s)) => Some(s.sval.clone()),
-            _ => None,
-        })
-        .collect()
 }

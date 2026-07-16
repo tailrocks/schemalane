@@ -1,13 +1,14 @@
 [package]
-edition = "2024"
+edition.workspace = true
 name = "pg_query_fmt"
-version = "0.1.3"
+version = "0.1.4"
 description = "PostgreSQL SQL formatter powered by pg_query"
-license = "MIT OR Apache-2.0"
-repository = "https://github.com/donbeave/schemalane"
-homepage = "https://github.com/donbeave/schemalane"
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+rust-version.workspace = true
 documentation = "https://docs.rs/pg_query_fmt"
-readme = "../README.md"
+readme = "README.md"
 keywords = ["postgres", "sql", "formatter", "pretty-print", "pg_query"]
 
 [lints]
@@ -18,5 +19,6 @@ name = "pg_query_fmt"
 path = "src/lib.rs"
 
 [dependencies]
-owo-colors = "4.3.0"
-pg_query = "6.1.1"
+owo-colors = { workspace = true }
+pg_query = { workspace = true }
+thiserror = { workspace = true }

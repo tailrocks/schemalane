@@ -7,8 +7,6 @@
 #![doc = "walked recursively to produce formatted SQL text with proper indentation"]
 #![doc = "and alignment."]
 
-use std::fmt;
-
 use pg_query::protobuf::node::Node;
 
 pub(crate) mod expr;
@@ -21,24 +19,15 @@ pub(crate) const INDENT: &str = "    ";
 // ── Error type ──────────────────────────────────────────────────────────────
 
 /// Errors that can occur during SQL formatting.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum FormatError {
     /// The SQL could not be parsed by `pg_query`.
+    #[error("parse error: {0}")]
     Parse(String),
     /// A parsed AST node could not be deparsed back to SQL text.
+    #[error("deparse error: {0}")]
     Deparse(String),
 }
-
-impl fmt::Display for FormatError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            FormatError::Parse(msg) => write!(f, "parse error: {msg}"),
-            FormatError::Deparse(msg) => write!(f, "deparse error: {msg}"),
-        }
-    }
-}
-
-impl std::error::Error for FormatError {}
 
 // ── Public API ──────────────────────────────────────────────────────────────
 
@@ -101,6 +90,73 @@ pub fn format_sql(sql: &str) -> Result<String, FormatError> {
 mod tests {
     use super::*;
 
+    fn assert_round_trips(sql: &str) {
+        let formatted = format_statement(sql).expect("format");
+        let input = pg_query::fingerprint(sql).expect("fingerprint input").hex;
+        let output = pg_query::fingerprint(&formatted)
+            .unwrap_or_else(|error| {
+                panic!("formatted output failed to parse: {error}\n---\n{formatted}")
+            })
+            .hex;
+        assert_eq!(
+            input, output,
+            "AST changed:\ninput:  {sql}\noutput: {formatted}"
+        );
+    }
+
+    #[test]
+    fn round_trip_corpus() {
+        for sql in [
+            "SELECT 1",
+            "SELECT * FROM t WHERE NOT (a AND b)",
+            "SELECT (a + b) * c FROM t",
+            "CREATE TABLE \"MyTable\" (\"MyCol\" int, \"select\" text)",
+            "ALTER INDEX idx_x RENAME TO idx_y",
+            "SELECT DISTINCT ON (id) id, v FROM t ORDER BY id",
+            "SELECT arr[1:3] FROM t",
+            "SELECT id FROM t FOR UPDATE",
+            "CREATE INDEX i ON t (lower(name) text_pattern_ops)",
+            "SELECT id FROM t WHERE a = 1",
+            "INSERT INTO t (id) VALUES (1)",
+            "UPDATE t SET id = 2 WHERE id = 1",
+            "DELETE FROM t WHERE id = 1",
+            "CREATE VIEW v AS SELECT 1 AS id",
+            "CREATE TABLE t (id bigint PRIMARY KEY, value text NOT NULL)",
+            "CREATE UNIQUE INDEX idx_t_id ON t (id)",
+            "SELECT CASE WHEN a THEN b ELSE c END FROM t",
+            "CREATE FUNCTION f() RETURNS text AS $body$ SELECT '$$'::text $body$ LANGUAGE sql",
+        ] {
+            assert_round_trips(sql);
+        }
+    }
+
+    #[test]
+    fn quotes_identifiers_when_plain_text_would_change_meaning() {
+        use crate::expr::quote_identifier;
+
+        assert_eq!(quote_identifier("wallet_id"), "wallet_id");
+        assert_eq!(quote_identifier("MyColumn"), "\"MyColumn\"");
+        assert_eq!(quote_identifier("select"), "\"select\"");
+        assert_eq!(quote_identifier("has space"), "\"has space\"");
+        assert_eq!(quote_identifier("a\"b"), "\"a\"\"b\"");
+    }
+
+    #[test]
+    fn preserves_array_slice_bounds() {
+        assert_eq!(
+            format_statement("SELECT arr[1:3] FROM t").unwrap(),
+            "SELECT arr[1:3]\nFROM t"
+        );
+    }
+
+    #[test]
+    fn alter_index_uses_the_index_object_label() {
+        assert_eq!(
+            format_statement("ALTER INDEX idx_x RENAME TO idx_y").unwrap(),
+            "ALTER INDEX idx_x RENAME TO idx_y"
+        );
+    }
+
     // ── Edge cases ──────────────────────────────────────────────────────────
 
     #[test]
@@ -157,7 +213,7 @@ mod tests {
         );
         assert_eq!(
             lines[8],
-            "    index                    bigint                          NOT NULL UNIQUE,"
+            "    \"index\"                  bigint                          NOT NULL UNIQUE,"
         );
         assert_eq!(
             lines[9],
@@ -198,9 +254,9 @@ mod tests {
         assert_eq!(lines[5], "    eth_signature_row_id        bigint,");
         assert_eq!(
             lines[6],
-            "    index                       int                                 NOT NULL,"
+            "    \"index\"                     int                                 NOT NULL,"
         );
-        assert_eq!(lines[7], "    UNIQUE (eth_transaction_row_id, index)");
+        assert_eq!(lines[7], "    UNIQUE (eth_transaction_row_id, \"index\")");
         assert_eq!(lines[8], ")");
     }
 

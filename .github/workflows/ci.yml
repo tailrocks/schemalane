@@ -18,13 +18,16 @@ jobs:
     name: Rust
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
         with:
           components: rustfmt, clippy
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
+
+      - name: Agent instructions
+        run: bash scripts/check-agent-instructions.sh
 
       - name: Format
         run: cargo fmt --all -- --check
@@ -35,12 +38,32 @@ jobs:
       - name: Test
         run: cargo test --workspace --locked --all-targets --all-features
 
-      - name: Publish dry run independent crates
-        run: |
-          cargo publish --dry-run --locked --allow-dirty -p schemalane-macros
-          cargo publish --dry-run --locked --allow-dirty -p pg_query_fmt
+      - name: Package workspace
+        run: cargo package --workspace --locked --allow-dirty
 
-      - name: Package dependent crates
-        run: |
-          cargo package --locked --allow-dirty --list -p schemalane-core >/dev/null
-          cargo package --locked --allow-dirty --list -p schemalane-cli >/dev/null
+  integration:
+    name: Integration (Postgres)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+
+      - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
+
+      - name: Integration tests
+        run: cargo test -p schemalane-core --locked --test postgres_integration -- --include-ignored
+
+  audit:
+    name: Security audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+
+      - name: Audit
+        run: cargo audit

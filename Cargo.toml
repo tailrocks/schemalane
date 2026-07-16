@@ -3,14 +3,38 @@ members = [
     "schemalane-core",
     "schemalane-cli",
     "schemalane-macros",
+    "schemalane-version",
+    "schemalane-embed-tests",
     "pg_query_fmt",
 ]
 default-members = [
     "schemalane-core",
     "schemalane-cli",
+    "schemalane-version",
     "pg_query_fmt",
 ]
 resolver = "3"
+
+[workspace.package]
+edition = "2024"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/tailrocks/schemalane"
+homepage = "https://github.com/tailrocks/schemalane"
+rust-version = "1.85"
+
+[workspace.dependencies]
+deadpool-postgres = "0.14.1"
+owo-colors = "4.3.0"
+pg_query = "6.1.1"
+tokio = "1.52"
+tokio-postgres = "0.7.18"
+thiserror = "2.0.18"
+schemalane-version = { version = "0.1.0", path = "schemalane-version" }
+
+schemalane-core = { version = "0.2.0", path = "schemalane-core" }
+schemalane-cli = { version = "0.2.0", path = "schemalane-cli" }
+schemalane-macros = { version = "0.1.1", path = "schemalane-macros" }
+pg_query_fmt = { version = "0.1.4", path = "pg_query_fmt" }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

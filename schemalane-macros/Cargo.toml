@@ -1,11 +1,12 @@
 [package]
 name = "schemalane-macros"
-version = "0.1.0"
-edition = "2024"
+version = "0.1.1"
+edition.workspace = true
 description = "Procedural macros for Schemalane migration embedding"
-license = "MIT OR Apache-2.0"
-repository = "https://github.com/donbeave/schemalane"
-homepage = "https://github.com/donbeave/schemalane"
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+rust-version.workspace = true
 documentation = "https://docs.rs/schemalane-macros"
 readme = "../README.md"
 keywords = ["macro", "proc-macro", "migration", "postgres", "schemalane"]
@@ -20,6 +21,7 @@ proc-macro = true
 proc-macro2 = "1.0.106"
 quote = "1.0.45"
 syn = { version = "2.0.117", features = ["parsing"] }
+schemalane-version = { workspace = true }
 
 [dev-dependencies]
-trybuild = "=1.0.116"
+trybuild = "1.0"

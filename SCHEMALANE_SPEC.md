@@ -18,6 +18,7 @@ Schemalane v1 is a PostgreSQL-only, forward-only migration toolkit with a Flyway
   - `init`
   - `up`
   - `status`
+  - `validate`
   - `fresh`
 - Driver stack:
   - tokio-postgres driver
@@ -32,43 +33,78 @@ Schemalane v1 is a PostgreSQL-only, forward-only migration toolkit with a Flyway
 
 Schemalane CLI namespace:
 
-- `schemalane migrate init`
+- `schemalane init`
 - `schemalane migrate up`
 - `schemalane migrate status`
+- `schemalane migrate validate`
 - `schemalane migrate fresh`
 
-### 2.1 Common Flags (`up`, `status`, `fresh`)
+`init` lives at the CLI root. Database commands live under `migrate`.
+
+### 2.1 Common Flags (`up`, `status`, `validate`, `fresh`)
 
 - `-d, --migration-dir <path>` (env: `MIGRATION_DIR`, default: `./migration`)
 - `--database-url <postgres://...>`
 - `--schema <schema_name>` (default: `public`)
 - `--history-table <name>` (default: `flyway_schema_history`)
 - `--installed-by <name>` (default: current DB user)
+- `--verbosity <minimal|compact|detailed>` (default: `minimal`; affects `up`
+  and `fresh` progress output)
+- `--advisory-lock-id <i64>` (default: derived from target schema and history table)
+
+`--database-url` also reads `DATABASE_URL`. Its PostgreSQL `sslmode` supports
+`disable` (plaintext), `prefer` (verified TLS when offered, otherwise plaintext), and
+`require` (verified TLS required). TLS uses the operating system trust store.
+`verify-ca`, `verify-full`, custom CA files, and client certificates are not supported.
+`channel_binding=disable|prefer|require` is parsed by tokio-postgres; the rustls
+connector supplies the `tls-server-end-point` binding when TLS is active and the
+certificate supports it.
 
 ### 2.2 Command-Specific Flags
 
-- `schemalane migrate init`
+- `schemalane init`
   - `--path <path>` (default: `./migration`)
   - `--force` (overwrite existing scaffold files)
 - `schemalane migrate status`
   - `--format table|json` (default: `table`)
   - `--fail-on-pending`
+- `schemalane migrate validate`
+  - `--format table|json` (default: `table`)
+  - `--fail-on-pending`
+- `schemalane migrate up`
+  - `--dry-run` (build and print the pending execution plan without applying it)
+  - `--format table|json` (dry-run output; default: `table`)
 - `schemalane migrate fresh`
-  - `--yes` (required)
+  - `--confirm yes` (required when non-interactive; interactive terminals prompt)
 
 When `--migration-dir` points to a migration crate with `Cargo.toml`, CLI execution delegates to:
 `cargo run --manifest-path <migration_dir>/Cargo.toml -- ...`.
 
-### 2.3 `init` Scaffold Output
+### 2.3 Read-only Validation and Planning
 
-`schemalane migrate init` creates a standalone migration crate with:
+`validate` compares discovered migrations with database history without applying
+migrations. Failed history is invalid with exit code 4. Missing or checksum-mismatched
+history is invalid with exit code 3. Pending migrations are valid unless
+`--fail-on-pending` is set, which exits 5. Table output is the status report; JSON
+output is `{ "report": <status>, "validation": { "valid": <bool> } }`.
+
+`up --dry-run` runs the same discovery, executor-registration, history, drift,
+failed-history, SQL parsing, and transaction-mode gates as `up`, then outputs only
+pending migrations. Table output contains formatted SQL and each transaction mode;
+Rust source is reported as not previewable. JSON output serializes `UpPlan`. Dry-run
+does not acquire the advisory lock and may become stale if another runner migrates
+concurrently.
+
+### 2.4 `init` Scaffold Output
+
+`schemalane init` creates a standalone migration crate with:
 
 - a runnable CLI (`src/main.rs`)
 - a reusable migrator builder (`src/lib.rs`)
 - SQL and Rust sample migrations in one folder (`./migrations`)
 - `embed_migrations!("./migrations")` in `src/lib.rs` for auto Rust migration detection
 
-### 2.4 Embedded Registration
+### 2.5 Embedded Registration
 
 Embedded mode uses macro-based registration:
 
@@ -137,16 +173,26 @@ Startup validation errors (hard fail):
 SQL migrations are transactional by default and executed via tokio-postgres connection APIs:
 
 ```rust
-let db = manager.get_connection();
-let txn = db.begin().await?;
-txn.execute_unprepared(sql_text).await?;
-txn.commit().await?;
+let mut client = pool.get().await?;
+let transaction = client.transaction().await?;
+for statement in parsed_statements {
+    transaction.batch_execute(&statement.sql).await?;
+}
+transaction.commit().await?;
 ```
 
 Requirements:
 
 - One SQL file may contain multiple SQL statements.
 - On failure, rollback when possible.
+
+Transaction handling: SQL files are parsed with PostgreSQL's parser. Statements
+that cannot run in a transaction block (`CREATE INDEX CONCURRENTLY`, `DROP INDEX
+CONCURRENTLY`, `VACUUM`, `REINDEX SCHEMA|DATABASE|SYSTEM`, `DISCARD ALL`, `ALTER
+SYSTEM`, `CREATE|DROP DATABASE`, `CREATE|DROP TABLESPACE`, and `CREATE|DROP
+SUBSCRIPTION`) make the whole file run non-transactionally. Mixing transactional
+and non-transactional statements in one file is rejected with exit code 7,
+matching Flyway's `mixed=false` default.
 
 ### 4.3 Rust Migration Execution
 
@@ -252,30 +298,53 @@ Drift is any migration in:
 - `3`: drift detected (`Missing` or `ChecksumMismatch`)
 - `4`: failed migration present (`success = false`)
 - `5`: pending migrations found with `--fail-on-pending`
-- `6`: destructive guard violation (`fresh` without `--yes`)
+- `6`: destructive guard violation (`fresh` without `--confirm yes`)
+- `7`: migration mixes transactional and non-transactional statements
 
 ## 9. `fresh` Semantics
 
-`fresh` is destructive and must require `--yes`.
+`fresh` is destructive and requires `--confirm yes` in non-interactive contexts;
+interactive terminals prompt for confirmation.
 
 Execution sequence:
 
-1. Acquire advisory lock.
-2. Validate migration set.
-3. Drop all user tables in target schema (including history table).
+1. Discover migrations and validate their metadata and Rust executor registration.
+2. Acquire the target's advisory lock.
+3. Drop the target schema with `CASCADE`, destroying every object in it, then recreate
+   the schema empty. Recreating the schema also resets its ownership and ACLs to those
+   established by the migration connection.
 4. Recreate `flyway_schema_history`.
-5. Execute `up`.
-6. Release lock.
+5. Apply every migration; SQL parsing and transaction-mode gates run as each migration
+   is prepared for execution.
+6. Release the advisory lock (or close the detached session on failure/cancellation).
 
 `fresh` never drops the PostgreSQL database itself.
 
-## 10. Programmatic API (Minimum)
+## 10. Programmatic API
 
-Minimum API surface (crate mode):
+The programmatic engine is `schemalane_core::SchemalaneMigrator`. Construct a
+`SchemalaneConfig`, create the migrator, then pass a
+`&deadpool_postgres::Pool` to `up`, `status`, or `fresh`:
 
-- `init_migration_project(&Path, force: bool) -> Result<InitReport, Error>`
-- `Migrator::up(&DatabaseConnection, &Config) -> Result<RunReport, Error>`
-- `Migrator::status(&DatabaseConnection, &Config) -> Result<StatusReport, Error>`
-- `Migrator::fresh(&DatabaseConnection, &Config) -> Result<RunReport, Error>`
+```rust
+let config = schemalane_core::SchemalaneConfig::new()
+    .with_schema("public")
+    .with_migrations_dir("./migrations");
+let migrator = schemalane_core::SchemalaneMigrator::new(config);
+let report = migrator.up(&pool).await?;
+```
 
-All four usage modes (crate, embedded, CLI, programmatic) share this core engine.
+`up_with_observer` and `fresh_with_observer` accept a `MigrationObserver` for
+run, migration, and SQL-statement lifecycle events. Rust migrations are
+registered with `register_rust_migration` and a `RustMigrationExecutor`.
+`init_migration_project(&Path, force)` scaffolds embedded-crate mode, whose
+generated entry point uses `schemalane_macros::embed_migrations!` and
+`schemalane_cli::EmbeddedRunner`.
+
+Transactional SQL migrations commit their successful history row atomically
+with their SQL. Non-transactional SQL and Rust migrations record history only
+after execution and therefore have at-least-once semantics; those migrations
+must be idempotent.
+
+All four usage modes (crate, embedded, CLI, and programmatic) share this core
+engine. Rustdoc owns exact signatures; this specification owns behavior.

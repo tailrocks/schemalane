@@ -7,3 +7,10 @@
 # Rust
 debug
 target
+
+# Secrets
+.env
+
+# Local agent configuration
+CLAUDE.local.md
+.claude/settings.local.json

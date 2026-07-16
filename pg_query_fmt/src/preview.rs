@@ -32,6 +32,16 @@ pub fn statement_preview(parsed: &pg_query::ParseResult) -> String {
     }
 }
 
+/// Parses raw SQL and creates its compact statement preview.
+///
+/// Invalid SQL falls back to the first 96 Unicode scalar values of the input.
+pub fn preview_sql(sql: &str) -> String {
+    match pg_query::parse(sql) {
+        Ok(parsed) => statement_preview(&parsed),
+        Err(_) => sql.chars().take(96).collect(),
+    }
+}
+
 /// Formats a qualified relation name (`schema.table` or just `table`).
 fn format_rangevar(rv: &protobuf::RangeVar) -> String {
     if rv.schemaname.is_empty() {
@@ -57,7 +67,7 @@ fn format_name_list(nodes: &[protobuf::Node]) -> String {
 }
 
 /// Returns the SQL keyword for an `ObjectType` enum value.
-fn object_type_label(objtype: i32) -> &'static str {
+pub(crate) fn object_type_label(objtype: i32) -> &'static str {
     match objtype {
         x if x == protobuf::ObjectType::ObjectTable as i32 => "TABLE",
         x if x == protobuf::ObjectType::ObjectIndex as i32 => "INDEX",
@@ -258,6 +268,20 @@ fn vacuum_preview(stmt: &pg_query::protobuf::VacuumStmt) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn preview_sql_parses_valid_sql() {
+        assert_eq!(
+            preview_sql("CREATE TABLE public.wallets (id bigint)"),
+            "CREATE TABLE public.wallets"
+        );
+    }
+
+    #[test]
+    fn preview_sql_truncates_invalid_sql_on_character_boundaries() {
+        let invalid = format!("{}!", "🦀".repeat(100));
+        assert_eq!(preview_sql(&invalid), "🦀".repeat(96));
+    }
 
     fn preview_of(sql: &str) -> String {
         let parsed = pg_query::parse(sql).expect("parse");

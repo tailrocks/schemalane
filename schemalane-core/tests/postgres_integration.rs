@@ -1,7 +1,7 @@
 use deadpool_postgres::{ManagerConfig, Pool, RecyclingMethod};
 use schemalane_core::{
     MigrationState, RustMigrationExecutor, RustTransactionMode, SchemalaneConfig, SchemalaneError,
-    SchemalaneMigrator,
+    SchemalaneMigrator, derive_advisory_lock_id,
 };
 use std::error::Error;
 use std::fs;
@@ -48,10 +48,14 @@ CREATE TABLE price_histories (
     runtime.block_on(async move {
         let pool = create_pool(&db_url)?;
 
-        let migrator = SchemalaneMigrator::new(SchemalaneConfig {
-            migrations_dir,
-            ..Default::default()
-        });
+        let migrator =
+            SchemalaneMigrator::new(SchemalaneConfig::new().with_migrations_dir(migrations_dir));
+
+        let plan = migrator.plan_up(&pool).await?;
+        assert_eq!(plan.migrations.len(), 2);
+        assert_eq!(plan.migrations[0].script, "V1__create_cake.sql");
+        assert_eq!(plan.migrations[1].script, "V2__create_price_histories.sql");
+        assert!(plan.migrations[0].statements[0].contains("CREATE TABLE cake"));
 
         let up_report = migrator.up(&pool).await?;
         assert_eq!(up_report.applied.len(), 2);
@@ -67,6 +71,8 @@ CREATE TABLE price_histories (
         assert_eq!(status.summary.failed, 0);
         assert_eq!(status.summary.missing, 0);
         assert_eq!(status.summary.checksum_mismatch, 0);
+        let validation = migrator.validate(&pool).await?;
+        assert_eq!(validation.summary.success, 2);
 
         let history_count = scalar_i64(
             &pool,
@@ -81,6 +87,159 @@ CREATE TABLE price_histories (
         Ok::<(), Box<dyn Error + 'static>>(())
     })?;
 
+    Ok(())
+}
+
+#[test]
+#[ignore = "requires Docker daemon"]
+fn characterize_late_migration_is_applied_out_of_order() -> Result<(), Box<dyn Error + 'static>> {
+    let node = Postgres::default().start()?;
+    let db_url = connection_string(&node)?;
+    let temp = TempDir::new()?;
+    let migrations_dir = temp.path().join("migrations");
+    fs::create_dir_all(&migrations_dir)?;
+    write_migration(
+        &migrations_dir,
+        "V1__first.sql",
+        "CREATE TABLE first_table (id int);",
+    )?;
+    write_migration(
+        &migrations_dir,
+        "V3__third.sql",
+        "CREATE TABLE third_table (id int);",
+    )?;
+
+    tokio::runtime::Runtime::new()?.block_on(async move {
+        let pool = create_pool(&db_url)?;
+        let migrator = SchemalaneMigrator::new(
+            SchemalaneConfig::new().with_migrations_dir(&migrations_dir),
+        );
+        migrator.up(&pool).await?;
+
+        write_migration(
+            &migrations_dir,
+            "V2__late.sql",
+            "CREATE TABLE late_table (id int);",
+        )?;
+        let before = migrator.status(&pool).await?;
+        assert_eq!(
+            before
+                .migrations
+                .iter()
+                .find(|entry| entry.script == "V2__late.sql")
+                .map(|entry| entry.state),
+            Some(MigrationState::Pending)
+        );
+
+        let report = migrator.up(&pool).await?;
+        assert_eq!(report.applied.len(), 1);
+        assert_eq!(report.applied[0].script, "V2__late.sql");
+        let after = migrator.status(&pool).await?;
+        assert_eq!(
+            after
+                .migrations
+                .iter()
+                .find(|entry| entry.script == "V2__late.sql")
+                .map(|entry| entry.state),
+            Some(MigrationState::Success)
+        );
+
+        let client = pool.get().await?;
+        let rows = client
+            .query(
+                "SELECT installed_rank, script FROM public.flyway_schema_history ORDER BY installed_rank",
+                &[],
+            )
+            .await?;
+        let history = rows
+            .iter()
+            .map(|row| (row.get::<_, i32>(0), row.get::<_, String>(1)))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            history,
+            vec![
+                (1, "V1__first.sql".to_owned()),
+                (2, "V3__third.sql".to_owned()),
+                (3, "V2__late.sql".to_owned()),
+            ]
+        );
+        Ok::<(), Box<dyn Error + 'static>>(())
+    })?;
+    Ok(())
+}
+
+#[test]
+#[ignore = "requires Docker daemon"]
+fn status_sees_history_in_mixed_case_schema() -> Result<(), Box<dyn Error + 'static>> {
+    let node = Postgres::default().start()?;
+    let db_url = connection_string(&node)?;
+    let temp = TempDir::new()?;
+    let migrations_dir = temp.path().join("migrations");
+    fs::create_dir_all(&migrations_dir)?;
+    write_migration(
+        &migrations_dir,
+        "V1__create_cake.sql",
+        "CREATE TABLE cake (id SERIAL PRIMARY KEY);",
+    )?;
+
+    let runtime = tokio::runtime::Runtime::new()?;
+    runtime.block_on(async move {
+        let pool = create_pool(&db_url)?;
+        let migrator = SchemalaneMigrator::new(
+            SchemalaneConfig::new()
+                .with_schema("MyApp")
+                .with_migrations_dir(migrations_dir),
+        );
+
+        assert_eq!(migrator.up(&pool).await?.applied.len(), 1);
+        let status = migrator.status(&pool).await?;
+        assert_eq!(status.summary.success, 1);
+        assert_eq!(status.summary.pending, 0);
+
+        Ok::<(), Box<dyn Error + 'static>>(())
+    })?;
+
+    Ok(())
+}
+
+#[test]
+#[ignore = "requires Docker daemon"]
+fn advisory_locks_do_not_contend_across_schemas() -> Result<(), Box<dyn Error + 'static>> {
+    let node = Postgres::default().start()?;
+    let db_url = connection_string(&node)?;
+    let temp = TempDir::new()?;
+    let migrations_dir = temp.path().join("migrations");
+    fs::create_dir_all(&migrations_dir)?;
+    write_migration(
+        &migrations_dir,
+        "V1__create_t.sql",
+        "CREATE TABLE t (id INT);",
+    )?;
+
+    let runtime = tokio::runtime::Runtime::new()?;
+    runtime.block_on(async move {
+        let pool = create_pool(&db_url)?;
+        let holder = pool.get().await?;
+        let public_lock = derive_advisory_lock_id("public", "flyway_schema_history");
+        holder
+            .execute("SELECT pg_advisory_lock($1)", &[&public_lock])
+            .await?;
+
+        let migrator = SchemalaneMigrator::new(
+            SchemalaneConfig::new()
+                .with_schema("other")
+                .with_migrations_dir(migrations_dir),
+        );
+        let report = tokio::time::timeout(std::time::Duration::from_secs(5), migrator.up(&pool))
+            .await
+            .expect("different-schema lock must not block")?;
+        assert_eq!(report.applied.len(), 1);
+
+        holder
+            .execute("SELECT pg_advisory_unlock($1)", &[&public_lock])
+            .await?;
+        Ok::<(), Box<dyn Error + 'static>>(())
+    })?;
     Ok(())
 }
 
@@ -109,10 +268,8 @@ CREATE TABLE cake (
     runtime.block_on(async move {
         let pool = create_pool(&db_url)?;
 
-        let migrator = SchemalaneMigrator::new(SchemalaneConfig {
-            migrations_dir,
-            ..Default::default()
-        });
+        let migrator =
+            SchemalaneMigrator::new(SchemalaneConfig::new().with_migrations_dir(migrations_dir));
 
         migrator.up(&pool).await?;
         {
@@ -130,6 +287,61 @@ CREATE TABLE cake (
 
         let after = scalar_i64(&pool, "SELECT COUNT(*) AS count FROM public.cake").await?;
         assert_eq!(after, 0);
+
+        let history_count = scalar_i64(
+            &pool,
+            "SELECT COUNT(*) AS count FROM public.flyway_schema_history",
+        )
+        .await?;
+        assert_eq!(history_count, 1);
+
+        Ok::<(), Box<dyn Error + 'static>>(())
+    })?;
+
+    Ok(())
+}
+
+#[test]
+#[ignore = "requires Docker daemon"]
+fn fresh_drops_only_target_schema() -> Result<(), Box<dyn Error + 'static>> {
+    let node = Postgres::default().start()?;
+    let db_url = connection_string(&node)?;
+
+    let temp = TempDir::new()?;
+    let migrations_dir = temp.path().join("migrations");
+    fs::create_dir_all(&migrations_dir)?;
+    write_migration(
+        &migrations_dir,
+        "V1__create_cake.sql",
+        "CREATE TABLE cake (id SERIAL PRIMARY KEY);",
+    )?;
+
+    let runtime = tokio::runtime::Runtime::new()?;
+    runtime.block_on(async move {
+        let pool = create_pool(&db_url)?;
+        let migrator =
+            SchemalaneMigrator::new(SchemalaneConfig::new().with_migrations_dir(migrations_dir));
+
+        migrator.up(&pool).await?;
+        {
+            let client = pool.get().await?;
+            client
+                .batch_execute("CREATE SCHEMA other_app; CREATE TABLE other_app.keep_me (id INT);")
+                .await?;
+        }
+
+        let report = migrator.fresh(&pool, true).await?;
+        assert_eq!(report.applied.len(), 1);
+
+        let client = pool.get().await?;
+        let row = client
+            .query_one(
+                "SELECT to_regclass('other_app.keep_me') IS NOT NULL AS exists",
+                &[],
+            )
+            .await?;
+        assert!(row.get::<_, bool>("exists"));
+        drop(client);
 
         let history_count = scalar_i64(
             &pool,
@@ -169,10 +381,8 @@ CREATE TABLE cake (
     runtime.block_on(async move {
         let pool = create_pool(&db_url)?;
 
-        let migrator = SchemalaneMigrator::new(SchemalaneConfig {
-            migrations_dir,
-            ..Default::default()
-        });
+        let migrator =
+            SchemalaneMigrator::new(SchemalaneConfig::new().with_migrations_dir(migrations_dir));
 
         migrator.up(&pool).await?;
 
@@ -198,6 +408,14 @@ CREATE TABLE cake (
             .ok_or_else(|| "expected migration entry".to_string())?;
 
         assert_eq!(mismatch_entry.state, MigrationState::ChecksumMismatch);
+        assert!(matches!(
+            migrator.validate(&pool).await,
+            Err(SchemalaneError::Drift(_))
+        ));
+        assert!(matches!(
+            migrator.plan_up(&pool).await,
+            Err(SchemalaneError::Drift(_))
+        ));
 
         Ok::<(), Box<dyn Error + 'static>>(())
     })?;
@@ -220,10 +438,7 @@ fn rust_migration_success_and_history_type() -> Result<(), Box<dyn Error + 'stat
     runtime.block_on(async move {
         let pool = create_pool(&db_url)?;
 
-        let mut migrator = SchemalaneMigrator::new(SchemalaneConfig {
-            migrations_dir,
-            ..Default::default()
-        });
+        let mut migrator = SchemalaneMigrator::new(SchemalaneConfig::new().with_migrations_dir(migrations_dir));
         migrator.register_rust_migration(
             "V1__create_rust_records.rs",
             RustMigrationExecutor::new(|client| Box::pin(create_rust_records(client))),
@@ -281,10 +496,8 @@ fn rust_migration_transaction_mode_rolls_back_on_failure() -> Result<(), Box<dyn
     runtime.block_on(async move {
         let pool = create_pool(&db_url)?;
 
-        let mut migrator = SchemalaneMigrator::new(SchemalaneConfig {
-            migrations_dir,
-            ..Default::default()
-        });
+        let mut migrator =
+            SchemalaneMigrator::new(SchemalaneConfig::new().with_migrations_dir(migrations_dir));
         migrator.register_rust_migration(
             "V2__rust_tx_failure.rs",
             RustMigrationExecutor::transactional(|client| {
@@ -336,10 +549,8 @@ fn rust_migration_no_transaction_mode_persists_partial_work_on_failure()
     runtime.block_on(async move {
         let pool = create_pool(&db_url)?;
 
-        let mut migrator = SchemalaneMigrator::new(SchemalaneConfig {
-            migrations_dir,
-            ..Default::default()
-        });
+        let mut migrator =
+            SchemalaneMigrator::new(SchemalaneConfig::new().with_migrations_dir(migrations_dir));
         migrator.register_rust_migration(
             "V3__rust_no_tx_failure.rs",
             RustMigrationExecutor::with_mode(RustTransactionMode::NoTransaction, |client| {
@@ -397,10 +608,7 @@ fn rust_migration_requires_registered_executor() -> Result<(), Box<dyn Error + '
     runtime.block_on(async move {
         let pool = create_pool(&db_url)?;
 
-        let migrator = SchemalaneMigrator::new(SchemalaneConfig {
-            migrations_dir,
-            ..Default::default()
-        });
+        let migrator = SchemalaneMigrator::new(SchemalaneConfig::new().with_migrations_dir(migrations_dir));
 
         let err = migrator.up(&pool).await.expect_err("expected validation error");
         assert!(
@@ -424,7 +632,389 @@ fn connection_string(
     ))
 }
 
+#[test]
+#[ignore = "requires Docker daemon"]
+fn sql_migration_failure_rolls_back_and_records_failed_row() -> Result<(), Box<dyn Error + 'static>>
+{
+    let node = Postgres::default().start()?;
+    let db_url = connection_string(&node)?;
+    let temp = TempDir::new()?;
+    let migrations_dir = temp.path().join("migrations");
+    fs::create_dir_all(&migrations_dir)?;
+    write_migration(
+        &migrations_dir,
+        "V1__fail.sql",
+        "CREATE TABLE roll_a (id int); SELECT * FROM missing_table_xyz;",
+    )?;
+    tokio::runtime::Runtime::new()?.block_on(async move {
+        let pool = create_pool(&db_url)?;
+        let migrator = SchemalaneMigrator::new(SchemalaneConfig::new().with_migrations_dir(migrations_dir));
+        assert!(matches!(migrator.up(&pool).await, Err(SchemalaneError::MigrationExecution { .. })));
+        assert!(!table_exists(&pool, "roll_a").await?);
+        let client = pool.get().await?;
+        let row = client.query_one("SELECT COUNT(*) AS count, bool_and(NOT \"success\") AS failed FROM public.flyway_schema_history", &[]).await?;
+        assert_eq!(row.get::<_, i64>("count"), 1);
+        assert!(row.get::<_, bool>("failed"));
+        Ok::<(), Box<dyn Error + 'static>>(())
+    })?;
+    Ok(())
+}
+
+#[test]
+#[ignore = "requires Docker daemon"]
+fn transactional_migration_and_history_commit_atomically() -> Result<(), Box<dyn Error + 'static>> {
+    let node = Postgres::default().start()?;
+    let db_url = connection_string(&node)?;
+    let temp = TempDir::new()?;
+    let migrations_dir = temp.path().join("migrations");
+    fs::create_dir_all(&migrations_dir)?;
+    write_migration(
+        &migrations_dir,
+        "V1__atomic.sql",
+        "CREATE TABLE atomic_t (id int); INSERT INTO atomic_t VALUES (1);",
+    )?;
+    tokio::runtime::Runtime::new()?.block_on(async move {
+        let pool = create_pool(&db_url)?;
+        let migrator =
+            SchemalaneMigrator::new(SchemalaneConfig::new().with_migrations_dir(migrations_dir));
+        assert_eq!(migrator.up(&pool).await?.applied.len(), 1);
+        assert_eq!(
+            scalar_i64(&pool, "SELECT COUNT(*) AS count FROM public.atomic_t").await?,
+            1
+        );
+        assert_eq!(
+            scalar_i64(
+                &pool,
+                "SELECT COUNT(*) AS count FROM public.flyway_schema_history WHERE \"success\""
+            )
+            .await?,
+            1
+        );
+        Ok::<(), Box<dyn Error + 'static>>(())
+    })?;
+    Ok(())
+}
+
+#[test]
+#[ignore = "requires Docker daemon"]
+fn failed_transactional_migration_leaves_only_failed_row() -> Result<(), Box<dyn Error + 'static>> {
+    let node = Postgres::default().start()?;
+    let db_url = connection_string(&node)?;
+    let temp = TempDir::new()?;
+    let migrations_dir = temp.path().join("migrations");
+    fs::create_dir_all(&migrations_dir)?;
+    write_migration(
+        &migrations_dir,
+        "V1__atomic_fail.sql",
+        "CREATE TABLE atomic_fail (id int); SELECT * FROM missing_atomic_table;",
+    )?;
+    tokio::runtime::Runtime::new()?.block_on(async move {
+        let pool = create_pool(&db_url)?;
+        let migrator =
+            SchemalaneMigrator::new(SchemalaneConfig::new().with_migrations_dir(migrations_dir));
+        assert!(matches!(
+            migrator.up(&pool).await,
+            Err(SchemalaneError::MigrationExecution { .. })
+        ));
+        assert!(!table_exists(&pool, "atomic_fail").await?);
+        assert_eq!(
+            scalar_i64(
+                &pool,
+                "SELECT COUNT(*) AS count FROM public.flyway_schema_history WHERE NOT \"success\""
+            )
+            .await?,
+            1
+        );
+        assert_eq!(
+            scalar_i64(
+                &pool,
+                "SELECT COUNT(*) AS count FROM public.flyway_schema_history"
+            )
+            .await?,
+            1
+        );
+        Ok::<(), Box<dyn Error + 'static>>(())
+    })?;
+    Ok(())
+}
+
+#[test]
+#[ignore = "requires Docker daemon"]
+fn failed_history_blocks_next_up_until_fixed() -> Result<(), Box<dyn Error + 'static>> {
+    let node = Postgres::default().start()?;
+    let db_url = connection_string(&node)?;
+    let temp = TempDir::new()?;
+    let migrations_dir = temp.path().join("migrations");
+    fs::create_dir_all(&migrations_dir)?;
+    write_migration(
+        &migrations_dir,
+        "V1__fail.sql",
+        "SELECT * FROM missing_table_xyz;",
+    )?;
+    tokio::runtime::Runtime::new()?.block_on(async move {
+        let pool = create_pool(&db_url)?;
+        let migrator =
+            SchemalaneMigrator::new(SchemalaneConfig::new().with_migrations_dir(migrations_dir));
+        assert!(matches!(
+            migrator.up(&pool).await,
+            Err(SchemalaneError::MigrationExecution { .. })
+        ));
+        let err = migrator
+            .up(&pool)
+            .await
+            .expect_err("failed history must block");
+        assert!(matches!(err, SchemalaneError::FailedHistory(_)));
+        assert_eq!(err.exit_code(), 4);
+        Ok::<(), Box<dyn Error + 'static>>(())
+    })?;
+    Ok(())
+}
+
+#[test]
+#[ignore = "requires Docker daemon"]
+fn mixed_statements_records_no_history_row() -> Result<(), Box<dyn Error + 'static>> {
+    let node = Postgres::default().start()?;
+    let db_url = connection_string(&node)?;
+    let temp = TempDir::new()?;
+    let migrations_dir = temp.path().join("migrations");
+    fs::create_dir_all(&migrations_dir)?;
+    write_migration(
+        &migrations_dir,
+        "V1__mixed.sql",
+        "CREATE TABLE t (id int); CREATE INDEX CONCURRENTLY i ON t (id);",
+    )?;
+    tokio::runtime::Runtime::new()?.block_on(async move {
+        let pool = create_pool(&db_url)?;
+        let migrator =
+            SchemalaneMigrator::new(SchemalaneConfig::new().with_migrations_dir(migrations_dir));
+        assert!(matches!(
+            migrator.up(&pool).await,
+            Err(SchemalaneError::MixedStatements { .. })
+        ));
+        assert_eq!(
+            scalar_i64(
+                &pool,
+                "SELECT COUNT(*) AS count FROM public.flyway_schema_history"
+            )
+            .await?,
+            0
+        );
+        Ok::<(), Box<dyn Error + 'static>>(())
+    })?;
+    Ok(())
+}
+
+#[test]
+#[ignore = "requires Docker daemon"]
+fn non_transactional_sql_executes_outside_txn() -> Result<(), Box<dyn Error + 'static>> {
+    let node = Postgres::default().start()?;
+    let db_url = connection_string(&node)?;
+    let temp = TempDir::new()?;
+    let migrations_dir = temp.path().join("migrations");
+    fs::create_dir_all(&migrations_dir)?;
+    write_migration(&migrations_dir, "V1__t.sql", "CREATE TABLE t (id int);")?;
+    write_migration(
+        &migrations_dir,
+        "V2__idx.sql",
+        "CREATE INDEX CONCURRENTLY idx_t ON t (id);",
+    )?;
+    tokio::runtime::Runtime::new()?.block_on(async move {
+        let pool = create_pool(&db_url)?;
+        let migrator =
+            SchemalaneMigrator::new(SchemalaneConfig::new().with_migrations_dir(migrations_dir));
+        assert_eq!(migrator.up(&pool).await?.applied.len(), 2);
+        assert!(table_exists(&pool, "idx_t").await?);
+        assert_eq!(
+            scalar_i64(
+                &pool,
+                "SELECT COUNT(*) AS count FROM public.flyway_schema_history WHERE \"success\""
+            )
+            .await?,
+            2
+        );
+        Ok::<(), Box<dyn Error + 'static>>(())
+    })?;
+    Ok(())
+}
+
+#[test]
+#[ignore = "requires Docker daemon"]
+fn up_blocks_while_lock_held() -> Result<(), Box<dyn Error + 'static>> {
+    let node = Postgres::default().start()?;
+    let db_url = connection_string(&node)?;
+    let temp = TempDir::new()?;
+    let migrations_dir = temp.path().join("migrations");
+    fs::create_dir_all(&migrations_dir)?;
+    write_migration(&migrations_dir, "V1__t.sql", "CREATE TABLE t (id int);")?;
+    tokio::runtime::Runtime::new()?.block_on(async move {
+        let pool = create_pool(&db_url)?;
+        let holder = pool.get().await?;
+        let key = derive_advisory_lock_id("public", "flyway_schema_history");
+        holder
+            .execute("SELECT pg_advisory_lock($1)", &[&key])
+            .await?;
+        let migrator =
+            SchemalaneMigrator::new(SchemalaneConfig::new().with_migrations_dir(migrations_dir));
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_secs(2), migrator.up(&pool))
+                .await
+                .is_err()
+        );
+        holder
+            .execute("SELECT pg_advisory_unlock($1)", &[&key])
+            .await?;
+        assert_eq!(migrator.up(&pool).await?.applied.len(), 1);
+        Ok::<(), Box<dyn Error + 'static>>(())
+    })?;
+    Ok(())
+}
+
+#[test]
+#[ignore = "requires Docker daemon"]
+fn lock_released_after_successful_up() -> Result<(), Box<dyn Error + 'static>> {
+    let node = Postgres::default().start()?;
+    let db_url = connection_string(&node)?;
+    let temp = TempDir::new()?;
+    let migrations_dir = temp.path().join("migrations");
+    fs::create_dir_all(&migrations_dir)?;
+    write_migration(&migrations_dir, "V1__t.sql", "CREATE TABLE t (id int);")?;
+    tokio::runtime::Runtime::new()?.block_on(async move {
+        let pool = create_pool(&db_url)?;
+        let migrator =
+            SchemalaneMigrator::new(SchemalaneConfig::new().with_migrations_dir(migrations_dir));
+        migrator.up(&pool).await?;
+        let client = pool.get().await?;
+        let key = derive_advisory_lock_id("public", "flyway_schema_history");
+        let row = client
+            .query_one("SELECT pg_try_advisory_lock($1) AS acquired", &[&key])
+            .await?;
+        assert!(row.get::<_, bool>("acquired"));
+        client
+            .execute("SELECT pg_advisory_unlock($1)", &[&key])
+            .await?;
+        Ok::<(), Box<dyn Error + 'static>>(())
+    })?;
+    Ok(())
+}
+
+#[test]
+#[ignore = "requires Docker daemon"]
+fn failed_sql_migration_records_failed_row_on_session_connection()
+-> Result<(), Box<dyn Error + 'static>> {
+    let node = Postgres::default().start()?;
+    let db_url = connection_string(&node)?;
+    let temp = TempDir::new()?;
+    let migrations_dir = temp.path().join("migrations");
+    fs::create_dir_all(&migrations_dir)?;
+    write_migration(
+        &migrations_dir,
+        "V1__session_fail.sql",
+        "CREATE TABLE session_fail(id int); SELECT * FROM absent_session_table;",
+    )?;
+    tokio::runtime::Runtime::new()?.block_on(async move {
+        let pool = create_pool(&db_url)?;
+        let migrator =
+            SchemalaneMigrator::new(SchemalaneConfig::new().with_migrations_dir(migrations_dir));
+        assert!(matches!(
+            migrator.up(&pool).await,
+            Err(SchemalaneError::MigrationExecution { .. })
+        ));
+        assert_eq!(
+            scalar_i64(
+                &pool,
+                "SELECT COUNT(*) AS count FROM public.flyway_schema_history WHERE NOT \"success\""
+            )
+            .await?,
+            1
+        );
+        Ok::<(), Box<dyn Error + 'static>>(())
+    })?;
+    Ok(())
+}
+
+#[test]
+#[ignore = "requires Docker daemon"]
+fn up_works_with_pool_max_size_one() -> Result<(), Box<dyn Error + 'static>> {
+    let node = Postgres::default().start()?;
+    let db_url = connection_string(&node)?;
+    let temp = TempDir::new()?;
+    let migrations_dir = temp.path().join("migrations");
+    fs::create_dir_all(&migrations_dir)?;
+    write_migration(
+        &migrations_dir,
+        "V1__single.sql",
+        "CREATE TABLE single_pool(id int);",
+    )?;
+    tokio::runtime::Runtime::new()?.block_on(async move {
+        let pool = create_pool_with_size(&db_url, 1)?;
+        let migrator =
+            SchemalaneMigrator::new(SchemalaneConfig::new().with_migrations_dir(migrations_dir));
+        let report = tokio::time::timeout(std::time::Duration::from_secs(5), migrator.up(&pool))
+            .await
+            .expect("size-one pool must not deadlock")?;
+        assert_eq!(report.applied.len(), 1);
+        Ok::<(), Box<dyn Error + 'static>>(())
+    })?;
+    Ok(())
+}
+
+#[test]
+#[ignore = "requires Docker daemon"]
+fn cancelled_up_releases_detached_session_lock() -> Result<(), Box<dyn Error + 'static>> {
+    let node = Postgres::default().start()?;
+    let db_url = connection_string(&node)?;
+    let temp = TempDir::new()?;
+    let migrations_dir = temp.path().join("migrations");
+    fs::create_dir_all(&migrations_dir)?;
+    write_rust_migration(&migrations_dir, "V1__sleep.rs")?;
+    tokio::runtime::Runtime::new()?.block_on(async move {
+        let pool = create_pool_with_size(&db_url, 1)?;
+        let mut migrator =
+            SchemalaneMigrator::new(SchemalaneConfig::new().with_migrations_dir(migrations_dir));
+        migrator.register_rust_migration(
+            "V1__sleep.rs",
+            RustMigrationExecutor::new(|_| {
+                Box::pin(async {
+                    tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+                    Ok(())
+                })
+            }),
+        );
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(250), migrator.up(&pool))
+                .await
+                .is_err()
+        );
+        let key = derive_advisory_lock_id("public", "flyway_schema_history");
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            let client = pool.get().await?;
+            let acquired: bool = client
+                .query_one("SELECT pg_try_advisory_lock($1) AS acquired", &[&key])
+                .await?
+                .get("acquired");
+            if acquired {
+                client
+                    .execute("SELECT pg_advisory_unlock($1)", &[&key])
+                    .await?;
+                break;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "detached session lock was not released"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        Ok::<(), Box<dyn Error + 'static>>(())
+    })?;
+    Ok(())
+}
+
 fn create_pool(db_url: &str) -> Result<Pool, Box<dyn Error + 'static>> {
+    create_pool_with_size(db_url, 5)
+}
+
+fn create_pool_with_size(db_url: &str, max_size: usize) -> Result<Pool, Box<dyn Error + 'static>> {
     let pg_config: tokio_postgres::Config = db_url.parse()?;
     let mgr = deadpool_postgres::Manager::from_config(
         pg_config,
@@ -433,7 +1023,7 @@ fn create_pool(db_url: &str) -> Result<Pool, Box<dyn Error + 'static>> {
             recycling_method: RecyclingMethod::Fast,
         },
     );
-    Ok(Pool::builder(mgr).max_size(5).build()?)
+    Ok(Pool::builder(mgr).max_size(max_size).build()?)
 }
 
 fn write_migration(
