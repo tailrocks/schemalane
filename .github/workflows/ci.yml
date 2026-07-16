@@ -44,3 +44,16 @@ jobs:
         run: |
           cargo package --locked --allow-dirty --list -p schemalane-core >/dev/null
           cargo package --locked --allow-dirty --list -p schemalane-cli >/dev/null
+
+  integration:
+    name: Integration (Postgres)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Integration tests
+        run: cargo test -p schemalane-core --locked --test postgres_integration -- --include-ignored

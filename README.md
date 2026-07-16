@@ -18,6 +18,21 @@ Schemalane CLI supports:
 - `schemalane migrate status`
 - `schemalane migrate fresh`
 
+## Testing
+
+Fast unit tests (no Docker):
+
+```sh
+cargo test --workspace
+```
+
+Full suite including PostgreSQL integration tests (requires a running Docker daemon;
+testcontainers starts a disposable Postgres per test):
+
+```sh
+cargo test -p schemalane-core --test postgres_integration -- --include-ignored
+```
+
 ## Local CLI Testing
 
 Install `schemalane` locally and test it as a standalone command:
