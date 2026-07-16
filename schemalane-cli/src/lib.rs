@@ -2,6 +2,7 @@
 
 mod args;
 mod connect;
+mod observer;
 mod prompt;
 mod render;
 mod runner;
