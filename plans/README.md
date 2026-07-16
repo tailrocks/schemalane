@@ -28,7 +28,7 @@ Wave A — critical fixes (mostly independent; 001 first):
 | 010 | Checksum golden-value tests (Flyway promise) | P1 | S | — | DONE |
 | 011 | Small bug quartet: UTF-8 truncate panic, EOF loop, masked errors, line numbers | P2 | S | — | DONE |
 | 012 | `embed_migrations!` rebuild dependency + `.RS` case | P2 | S-M | — | DONE |
-| 013 | TLS support (`sslmode`-driven rustls) | P1 | M | — | TODO |
+| 013 | TLS support (`sslmode`-driven rustls) | P1 | M | — | DONE — disable/prefer plaintext pass; require/prefer reject self-signed TLS |
 
 Wave B — hardening & structure prerequisites:
 

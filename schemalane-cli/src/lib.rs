@@ -5,6 +5,7 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
 use comfy_table::{Attribute, Cell, CellAlignment, Color, ContentArrangement, Table, presets};
 use deadpool_postgres::{ManagerConfig, Pool, RecyclingMethod};
 use owo_colors::{OwoColorize, Stream, Style};
+use rustls_platform_verifier::ConfigVerifierExt;
 use schemalane_core::{
     MigrationFailed, MigrationFinished, MigrationObserver, MigrationStarted, MigrationState,
     SchemalaneConfig, SchemalaneError, SchemalaneMigrator, SqlStatementFailed,
@@ -821,17 +822,26 @@ fn create_pool(database_url: &str) -> Result<Pool, SchemalaneError> {
         SchemalaneError::Validation(format!("failed to parse database URL: {err}"))
     })?;
 
-    let mgr = deadpool_postgres::Manager::from_config(
-        pg_config,
-        NoTls,
-        ManagerConfig {
-            recycling_method: RecyclingMethod::Fast,
-        },
-    );
+    let manager_config = ManagerConfig {
+        recycling_method: RecyclingMethod::Fast,
+    };
+    let mgr = if wants_tls(&pg_config) {
+        let tls_config = rustls::ClientConfig::with_platform_verifier().map_err(|err| {
+            SchemalaneError::Validation(format!("failed to configure TLS verifier: {err}"))
+        })?;
+        let tls = tokio_postgres_rustls::MakeRustlsConnect::new(tls_config);
+        deadpool_postgres::Manager::from_config(pg_config, tls, manager_config)
+    } else {
+        deadpool_postgres::Manager::from_config(pg_config, NoTls, manager_config)
+    };
 
     Pool::builder(mgr).max_size(5).build().map_err(|err| {
         SchemalaneError::Validation(format!("failed to build connection pool: {err}"))
     })
+}
+
+fn wants_tls(config: &tokio_postgres::Config) -> bool {
+    config.get_ssl_mode() != tokio_postgres::config::SslMode::Disable
 }
 
 async fn connect_with_feedback(
@@ -1571,6 +1581,20 @@ mod tests {
         let out = super::truncate_preview(&long, 60);
         assert!(out.ends_with("..."));
         assert_eq!(out.chars().count(), 60);
+    }
+
+    #[test]
+    fn tls_mode_selection() {
+        let disable: tokio_postgres::Config = "postgres://u@h/db?sslmode=disable"
+            .parse()
+            .expect("disable config");
+        let prefer: tokio_postgres::Config = "postgres://u@h/db".parse().expect("prefer config");
+        let require: tokio_postgres::Config = "postgres://u@h/db?sslmode=require"
+            .parse()
+            .expect("require config");
+        assert!(!super::wants_tls(&disable));
+        assert!(super::wants_tls(&prefer));
+        assert!(super::wants_tls(&require));
     }
 
     #[test]
