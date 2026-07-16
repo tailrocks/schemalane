@@ -1850,7 +1850,7 @@ dependencies = [
 
 [[package]]
 name = "pg_query_fmt"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "owo-colors",
  "pg_query",
@@ -2357,7 +2357,7 @@ dependencies = [
 
 [[package]]
 name = "schemalane-cli"
-version = "0.1.26"
+version = "0.2.0"
 dependencies = [
  "clap",
  "comfy-table",
@@ -2377,7 +2377,7 @@ dependencies = [
 
 [[package]]
 name = "schemalane-core"
-version = "0.1.20"
+version = "0.2.0"
 dependencies = [
  "crc32fast",
  "deadpool-postgres",
@@ -2403,7 +2403,7 @@ dependencies = [
 
 [[package]]
 name = "schemalane-macros"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "proc-macro2",
  "quote",

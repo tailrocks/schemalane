@@ -31,10 +31,10 @@ tokio-postgres = "0.7.18"
 thiserror = "2.0.18"
 schemalane-version = { version = "0.1.0", path = "schemalane-version" }
 
-schemalane-core = { version = "0.1.20", path = "schemalane-core" }
-schemalane-cli = { version = "0.1.26", path = "schemalane-cli" }
-schemalane-macros = { version = "0.1.0", path = "schemalane-macros" }
-pg_query_fmt = { version = "0.1.3", path = "pg_query_fmt" }
+schemalane-core = { version = "0.2.0", path = "schemalane-core" }
+schemalane-cli = { version = "0.2.0", path = "schemalane-cli" }
+schemalane-macros = { version = "0.1.1", path = "schemalane-macros" }
+pg_query_fmt = { version = "0.1.4", path = "pg_query_fmt" }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
