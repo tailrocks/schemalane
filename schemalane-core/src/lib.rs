@@ -1687,15 +1687,11 @@ edition = "2024"
 publish = false
 
 [dependencies]
-schemalane-core = { version = "0.1", registry = "kellnr" }
-schemalane-cli = { version = "0.1", registry = "kellnr" }
-tokio = { version = "1.48.0", features = ["macros", "rt-multi-thread"] }
+schemalane-core = "0.1"
+schemalane-cli = "0.1"
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 
-# Expected local/private registry name in ~/.cargo/config.toml:
-# [registries.kellnr]
-# index = "sparse+http://localhost:8000/api/v1/crates/"
-#
-# If schemalane crates are not published yet, replace the lines above with:
+# Developing against a local schemalane checkout? Use path dependencies:
 # schemalane-core = { path = "../schemalane-core" }
 # schemalane-cli = { path = "../schemalane-cli" }
 "#;
@@ -2049,12 +2045,16 @@ INSERT INTO ledger(note) VALUES ('ok');
         let cargo_toml =
             fs::read_to_string(target.join("Cargo.toml")).expect("read generated Cargo.toml");
         assert!(
-            cargo_toml.contains("schemalane-core = { version = \"0.1\", registry = \"kellnr\" }"),
-            "scaffold should default schemalane-core dependency to kellnr registry"
+            cargo_toml.contains("schemalane-core = \"0.1\""),
+            "scaffold should depend on schemalane-core from crates.io"
         );
         assert!(
-            cargo_toml.contains("schemalane-cli = { version = \"0.1\", registry = \"kellnr\" }"),
-            "scaffold should default schemalane-cli dependency to kellnr registry"
+            cargo_toml.contains("schemalane-cli = \"0.1\""),
+            "scaffold should depend on schemalane-cli from crates.io"
+        );
+        assert!(
+            !cargo_toml.contains("kellnr"),
+            "scaffold must not reference a private registry"
         );
 
         let lib_source = fs::read_to_string(target.join("src/lib.rs")).expect("read src/lib.rs");
