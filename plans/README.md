@@ -68,7 +68,7 @@ Wave D — direction spikes (design/investigate, maintainer sign-off before buil
 | Plan | Title | Priority | Effort | Depends on | Status |
 |------|-------|----------|--------|------------|--------|
 | 037 | Spike: `validate` command (CI drift gate) | P3 | S-M | 029, 009 | DONE |
-| 038 | Spike: `repair` command (unblock failed history) | P3 | M | 030, 019 | TODO |
+| 038 | Spike: `repair` command (unblock failed history) | P3 | M | 030, 019 | DONE — prototype stopped because Flyway parity requires a new `DELETE` history state |
 | 039 | Spike: offline `check` command + lint seam | P3 | M | 029, 005 | TODO |
 | 040 | Spike: `up --dry-run` (show the SQL before running) | P3 | S-M | 022, 035 | TODO |
 | 041 | Spike: out-of-order semantics investigation | P3 | S | 001 | TODO |
