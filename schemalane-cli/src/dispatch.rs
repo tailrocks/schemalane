@@ -46,7 +46,10 @@ async fn run_migrate_cli(args: MigrateArgs) -> Result<(), SchemalaneError> {
             },
         command,
     } = args;
-    let command = command.unwrap_or(MigrateCommand::Up);
+    let command = command.unwrap_or(MigrateCommand::Up {
+        dry_run: false,
+        format: crate::args::StatusFormat::Table,
+    });
     let verbosity = verbosity.unwrap_or_default();
 
     let manifest_path = migration_dir.join("Cargo.toml");

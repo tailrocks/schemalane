@@ -68,7 +68,13 @@ pub(crate) async fn run_db_command(
     verbosity: Verbosity,
 ) -> Result<(), SchemalaneError> {
     match command {
-        MigrateCommand::Up => run_up_command(migrator, pool, verbosity).await?,
+        MigrateCommand::Up { dry_run, format } => {
+            if dry_run {
+                run_dry_run_command(migrator, pool, format).await?;
+            } else {
+                run_up_command(migrator, pool, verbosity).await?;
+            }
+        }
         MigrateCommand::Status {
             format,
             fail_on_pending,
@@ -115,6 +121,49 @@ pub(crate) async fn run_db_command(
         }
     }
 
+    Ok(())
+}
+
+async fn run_dry_run_command(
+    migrator: &SchemalaneMigrator,
+    pool: &Pool,
+    format: StatusFormat,
+) -> Result<(), SchemalaneError> {
+    let plan = migrator.plan_up(pool).await?;
+    match format {
+        StatusFormat::Json => println!(
+            "{}",
+            serde_json::to_string_pretty(&plan).map_err(|error| {
+                SchemalaneError::Internal(format!("failed to encode JSON: {error}"))
+            })?
+        ),
+        StatusFormat::Table => {
+            for migration in &plan.migrations {
+                let mode = match migration.transaction_mode {
+                    schemalane_core::PlannedTransactionMode::Transactional => "transaction",
+                    schemalane_core::PlannedTransactionMode::NonTransactional => "no transaction",
+                    schemalane_core::PlannedTransactionMode::Rust => "source not previewable",
+                    _ => "unknown",
+                };
+                println!(
+                    "-- {} (V{}, {}, {mode})",
+                    sanitize_terminal(&migration.script),
+                    sanitize_terminal(&migration.version),
+                    migration.migration_type
+                );
+                if migration.statements.is_empty() {
+                    println!("-- RUST (source not previewable)");
+                } else {
+                    for statement in &migration.statements {
+                        let formatted = pg_query_fmt::format_statement(statement)
+                            .unwrap_or_else(|_| statement.clone());
+                        println!("{};", sanitize_terminal(&formatted));
+                    }
+                }
+                println!();
+            }
+        }
+    }
     Ok(())
 }
 

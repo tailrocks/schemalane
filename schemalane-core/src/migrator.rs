@@ -24,11 +24,13 @@ use crate::history::latest_history_by_script;
 use crate::history::{HistoryRepository, HistoryRow, HistoryWrite};
 use crate::ident::quote_ident;
 use crate::report::build_status_report;
+use crate::sql_analysis::{SqlTransactionMode, parse_sql_migration, resolve_sql_transaction_mode};
 use crate::{SchemalaneConfig, SchemalaneError};
 
 use crate::{
     AppliedMigration, MigrationFailed, MigrationFinished, MigrationObserver, MigrationStarted,
-    MigrationState, NoopMigrationObserver, RunReport, StatusReport,
+    MigrationState, NoopMigrationObserver, PlannedMigration, PlannedTransactionMode, RunReport,
+    StatusReport, UpPlan,
 };
 
 #[cfg(test)]
@@ -202,6 +204,67 @@ impl SchemalaneMigrator {
             return Err(SchemalaneError::Drift(drift.join(", ")));
         }
         Ok(report)
+    }
+
+    /// Builds a read-only ordered plan for pending migrations.
+    ///
+    /// The method performs the same discovery, executor-registration, history,
+    /// drift, failed-history, SQL parsing, and transaction-mode gates as `up`.
+    /// It does not acquire the advisory lock and can become stale if another
+    /// process migrates concurrently.
+    pub async fn plan_up(&self, pool: &Pool) -> Result<UpPlan, SchemalaneError> {
+        let migrations = self.discover_migrations()?;
+        self.ensure_rust_executors_registered(&migrations)?;
+        let client = pool.get().await?;
+        let repository = self.history_repository();
+        let history = if repository.exists(&client).await? {
+            repository.load(&client).await?
+        } else {
+            Vec::new()
+        };
+        Self::ensure_no_blocking_history(&migrations, &history)?;
+        let latest = latest_history_by_script(&history);
+        let mut planned = Vec::new();
+        for migration in migrations {
+            if latest
+                .get(migration.script.as_str())
+                .is_some_and(|row| row.success)
+            {
+                continue;
+            }
+            let (transaction_mode, statements) = match &migration.source {
+                MigrationSource::SqlFile { content, .. } => {
+                    let statements = parse_sql_migration(content)?;
+                    let mode = resolve_sql_transaction_mode(&statements, &migration.script)?;
+                    let mode = match mode {
+                        SqlTransactionMode::Transactional => PlannedTransactionMode::Transactional,
+                        SqlTransactionMode::NonTransactional => {
+                            PlannedTransactionMode::NonTransactional
+                        }
+                    };
+                    (
+                        mode,
+                        statements
+                            .into_iter()
+                            .map(|statement| statement.sql)
+                            .collect(),
+                    )
+                }
+                MigrationSource::RustFile(_) => (PlannedTransactionMode::Rust, Vec::new()),
+            };
+            planned.push(PlannedMigration {
+                version: migration.version_text,
+                script: migration.script,
+                migration_type: migration.migration_type.as_history_type().to_owned(),
+                transaction_mode,
+                statements,
+            });
+        }
+        Ok(UpPlan {
+            schema: self.config.schema.clone(),
+            history_table: self.config.history_table.clone(),
+            migrations: planned,
+        })
     }
 
     /// Transactional SQL migrations commit their history row atomically with the migration.

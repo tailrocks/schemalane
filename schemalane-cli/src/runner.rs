@@ -140,7 +140,10 @@ mod tests {
             history_table: "flyway_schema_history",
             installed_by: None,
             advisory_lock_id: None,
-            command: &MigrateCommand::Up,
+            command: &MigrateCommand::Up {
+                dry_run: false,
+                format: StatusFormat::Table,
+            },
             verbosity: Verbosity::Minimal,
         };
         let (args, envs) = delegation_command_parts(Path::new("./m/Cargo.toml"), &options);
@@ -175,7 +178,10 @@ mod tests {
 
     #[test]
     fn delegation_up_forwards_all_options_in_order() {
-        let (args, envs) = delegated_args(&MigrateCommand::Up);
+        let (args, envs) = delegated_args(&MigrateCommand::Up {
+            dry_run: false,
+            format: StatusFormat::Table,
+        });
         assert_eq!(
             args,
             [
@@ -215,6 +221,21 @@ mod tests {
             "--format".to_owned(),
             "json".to_owned(),
             "--fail-on-pending".to_owned(),
+        ]));
+    }
+
+    #[test]
+    fn delegation_up_forwards_dry_run_format() {
+        let command = MigrateCommand::Up {
+            dry_run: true,
+            format: StatusFormat::Json,
+        };
+        let (args, _) = delegated_args(&command);
+        assert!(args.ends_with(&[
+            "up".to_owned(),
+            "--dry-run".to_owned(),
+            "--format".to_owned(),
+            "json".to_owned(),
         ]));
     }
 
@@ -369,7 +390,7 @@ mod tests {
             .expect("CLI args should parse");
         let args = unwrap_migrate(cli);
         assert_eq!(args.migration_dir, PathBuf::from("test2/migration"));
-        assert!(matches!(args.command, Some(MigrateCommand::Up)));
+        assert!(matches!(args.command, Some(MigrateCommand::Up { .. })));
     }
 
     #[test]
@@ -400,6 +421,27 @@ mod tests {
             Some(MigrateCommand::Validate {
                 format: StatusFormat::Json,
                 fail_on_pending: true
+            })
+        ));
+    }
+
+    #[test]
+    fn parse_up_dry_run_command() {
+        let cli = Cli::try_parse_from([
+            "schemalane",
+            "migrate",
+            "up",
+            "--dry-run",
+            "--format",
+            "json",
+        ])
+        .expect("dry-run args should parse");
+        let args = unwrap_migrate(cli);
+        assert!(matches!(
+            args.command,
+            Some(MigrateCommand::Up {
+                dry_run: true,
+                format: StatusFormat::Json
             })
         ));
     }

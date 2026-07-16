@@ -70,7 +70,13 @@ pub(crate) struct CommonDbArgs {
 #[derive(Debug, Subcommand)]
 pub(crate) enum MigrateCommand {
     /// Apply pending migrations (default).
-    Up,
+    Up {
+        /// Print the gate-faithful execution plan without applying it.
+        #[arg(long)]
+        dry_run: bool,
+        #[arg(long, value_enum, default_value_t = StatusFormat::Table)]
+        format: StatusFormat,
+    },
     /// Show migration status.
     Status {
         #[arg(long, value_enum, default_value_t = StatusFormat::Table)]
@@ -115,7 +121,8 @@ pub(crate) struct EmbeddedCli {
 impl MigrateCommand {
     pub(crate) fn label(&self) -> &'static str {
         match self {
-            Self::Up => "migrate up",
+            Self::Up { dry_run: true, .. } => "migrate up (dry run)",
+            Self::Up { .. } => "migrate up",
             Self::Status { .. } => "migrate status",
             Self::Validate { .. } => "migrate validate",
             Self::Fresh { .. } => "migrate fresh",

@@ -95,8 +95,18 @@ pub(crate) fn delegation_command_parts(
     ]);
 
     match options.command {
-        MigrateCommand::Up => {
+        MigrateCommand::Up { dry_run, format } => {
             args.push(OsString::from("up"));
+            if *dry_run {
+                args.push(OsString::from("--dry-run"));
+                args.extend([
+                    OsString::from("--format"),
+                    OsString::from(match format {
+                        StatusFormat::Table => "table",
+                        StatusFormat::Json => "json",
+                    }),
+                ]);
+            }
         }
         MigrateCommand::Status {
             format,

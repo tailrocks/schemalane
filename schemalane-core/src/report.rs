@@ -141,6 +141,41 @@ pub struct InitReport {
     pub created: Vec<PathBuf>,
     pub overwritten: Vec<PathBuf>,
 }
+
+/// Transaction behavior of one planned migration.
+#[derive(Debug, Clone, Copy, Serialize)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum PlannedTransactionMode {
+    /// SQL executes inside one transaction.
+    Transactional,
+    /// SQL executes directly on the migration session.
+    NonTransactional,
+    /// Rust executor owns the behavior described by `transaction_mode`.
+    Rust,
+}
+
+/// One pending migration in an [`UpPlan`].
+#[derive(Debug, Clone, Serialize)]
+#[non_exhaustive]
+pub struct PlannedMigration {
+    pub version: String,
+    pub script: String,
+    #[serde(rename = "type")]
+    pub migration_type: String,
+    pub transaction_mode: PlannedTransactionMode,
+    /// Raw SQL statements in execution order; empty for Rust migrations.
+    pub statements: Vec<String>,
+}
+
+/// Read-only, ordered preview of what `up` would execute.
+#[derive(Debug, Clone, Serialize)]
+#[non_exhaustive]
+pub struct UpPlan {
+    pub schema: String,
+    pub history_table: String,
+    pub migrations: Vec<PlannedMigration>,
+}
 pub(crate) fn build_status_report(
     schema: &str,
     history_table: &str,

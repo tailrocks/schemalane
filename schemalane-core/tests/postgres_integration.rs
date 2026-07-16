@@ -51,6 +51,12 @@ CREATE TABLE price_histories (
         let migrator =
             SchemalaneMigrator::new(SchemalaneConfig::new().with_migrations_dir(migrations_dir));
 
+        let plan = migrator.plan_up(&pool).await?;
+        assert_eq!(plan.migrations.len(), 2);
+        assert_eq!(plan.migrations[0].script, "V1__create_cake.sql");
+        assert_eq!(plan.migrations[1].script, "V2__create_price_histories.sql");
+        assert!(plan.migrations[0].statements[0].contains("CREATE TABLE cake"));
+
         let up_report = migrator.up(&pool).await?;
         assert_eq!(up_report.applied.len(), 2);
         assert_eq!(up_report.skipped, 0);
@@ -326,6 +332,10 @@ CREATE TABLE cake (
         assert_eq!(mismatch_entry.state, MigrationState::ChecksumMismatch);
         assert!(matches!(
             migrator.validate(&pool).await,
+            Err(SchemalaneError::Drift(_))
+        ));
+        assert!(matches!(
+            migrator.plan_up(&pool).await,
             Err(SchemalaneError::Drift(_))
         ));
 

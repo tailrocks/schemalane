@@ -44,8 +44,8 @@ pub use observer::{
     NoopMigrationObserver, SqlStatementFailed, SqlStatementFinished, SqlStatementStarted,
 };
 pub use report::{
-    AppliedMigration, InitReport, MigrationState, RunReport, StatusEntry, StatusReport,
-    StatusSummary,
+    AppliedMigration, InitReport, MigrationState, PlannedMigration, PlannedTransactionMode,
+    RunReport, StatusEntry, StatusReport, StatusSummary, UpPlan,
 };
 pub use rust_migration::{RustMigrationExecutor, RustMigrationFuture, RustTransactionMode};
 pub use schemalane_macros::embed_migrations;
