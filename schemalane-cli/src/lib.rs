@@ -86,25 +86,6 @@ fn truncate_preview(s: &str, max_width: usize) -> String {
     format!("{truncated}...")
 }
 
-fn max_pending_script_len(report: &StatusReport) -> usize {
-    report
-        .migrations
-        .iter()
-        .filter(|e| e.state == MigrationState::Pending)
-        .map(|e| e.script.len())
-        .max()
-        .unwrap_or(0)
-}
-
-fn max_script_len(report: &StatusReport) -> usize {
-    report
-        .migrations
-        .iter()
-        .map(|e| e.script.len())
-        .max()
-        .unwrap_or(0)
-}
-
 // ── Interactive prompt ──────────────────────────────────────────────────────
 
 fn prompt_yes_no(prompt: &str) -> Result<bool, SchemalaneError> {
@@ -147,25 +128,53 @@ struct PostgresTarget {
 
 struct CliProgressObserver {
     verbosity: Verbosity,
-    max_script_len: usize,
+    max_script_len: Mutex<usize>,
     last_error: Mutex<Option<String>>,
+    planned_report: Mutex<Option<StatusReport>>,
 }
 
 impl CliProgressObserver {
-    fn new(verbosity: Verbosity, max_script_len: usize) -> Self {
+    fn new(verbosity: Verbosity) -> Self {
         Self {
             verbosity,
-            max_script_len,
+            max_script_len: Mutex::new(0),
             last_error: Mutex::new(None),
+            planned_report: Mutex::new(None),
         }
     }
 
     fn last_error(&self) -> Option<String> {
         self.last_error.lock().ok().and_then(|e| e.clone())
     }
+
+    fn planned_report(&self) -> Option<StatusReport> {
+        self.planned_report.lock().ok().and_then(|r| r.clone())
+    }
 }
 
 impl MigrationObserver for CliProgressObserver {
+    fn on_run_planned(&self, report: &StatusReport) {
+        print_status_overview(report);
+        print_pending_migrations(report);
+        if let Ok(mut width) = self.max_script_len.lock() {
+            *width = report
+                .migrations
+                .iter()
+                .map(|entry| entry.script.len())
+                .max()
+                .unwrap_or(0);
+        }
+        if let Ok(mut planned) = self.planned_report.lock() {
+            *planned = Some(report.clone());
+        }
+        eprintln!(
+            "{}\n",
+            "Migration Progress".if_supports_color(Stream::Stderr, |text| {
+                text.style(Style::new().bold().bright_white())
+            })
+        );
+    }
+
     fn on_migration_start(&self, event: &MigrationStarted) {
         if self.verbosity == Verbosity::Minimal {
             return;
@@ -195,7 +204,7 @@ impl MigrationObserver for CliProgressObserver {
                 let padded = format!(
                     "{:<width$}",
                     sanitize_terminal(&event.migration.script),
-                    width = self.max_script_len
+                    width = self.max_script_len.lock().map_or(0, |width| *width)
                 );
                 eprintln!(
                     "[{idx}/{total}] {}     {} {}",
@@ -241,7 +250,7 @@ impl MigrationObserver for CliProgressObserver {
             let padded = format!(
                 "{:<width$}",
                 sanitize_terminal(&event.migration.script),
-                width = self.max_script_len
+                width = self.max_script_len.lock().map_or(0, |width| *width)
             );
             eprintln!(
                 "[{idx}/{total}] {}     {} {}",
@@ -1014,19 +1023,7 @@ async fn run_up_command(
     pool: &Pool,
     verbosity: Verbosity,
 ) -> Result<(), SchemalaneError> {
-    let status_before = migrator.status(pool).await?;
-    print_status_overview(&status_before);
-    print_pending_migrations(&status_before);
-
-    eprintln!(
-        "{}",
-        "Migration Progress".if_supports_color(Stream::Stderr, |text| {
-            text.style(Style::new().bold().bright_white())
-        })
-    );
-    eprintln!();
-
-    let observer = CliProgressObserver::new(verbosity, max_pending_script_len(&status_before));
+    let observer = CliProgressObserver::new(verbosity);
     let report = match migrator.up_with_observer(pool, &observer).await {
         Ok(report) => report,
         Err(err) => {
@@ -1048,7 +1045,9 @@ async fn run_up_command(
                     format!("{err}").if_supports_color(Stream::Stderr, |text| text.bright_black())
                 );
             }
-            print_error_diagnostics(&status_before, &err);
+            if let Some(report) = observer.planned_report() {
+                print_error_diagnostics(&report, &err);
+            }
             return Err(err);
         }
     };
@@ -1063,9 +1062,6 @@ async fn run_fresh_command(
     confirm: Option<&str>,
     verbosity: Verbosity,
 ) -> Result<(), SchemalaneError> {
-    let status_before = migrator.status(pool).await?;
-    print_status_overview(&status_before);
-
     // Show DANGEROUS warning
     eprintln!(
         "{}",
@@ -1123,15 +1119,7 @@ async fn run_fresh_command(
         return Ok(());
     }
 
-    eprintln!(
-        "{}",
-        "Migration Progress".if_supports_color(Stream::Stderr, |text| {
-            text.style(Style::new().bold().bright_white())
-        })
-    );
-    eprintln!();
-
-    let observer = CliProgressObserver::new(verbosity, max_script_len(&status_before));
+    let observer = CliProgressObserver::new(verbosity);
     let report = match migrator.fresh_with_observer(pool, true, &observer).await {
         Ok(report) => report,
         Err(err) => {
@@ -1153,7 +1141,9 @@ async fn run_fresh_command(
                     format!("{err}").if_supports_color(Stream::Stderr, |text| text.bright_black())
                 );
             }
-            print_error_diagnostics(&status_before, &err);
+            if let Some(report) = observer.planned_report() {
+                print_error_diagnostics(&report, &err);
+            }
             return Err(err);
         }
     };

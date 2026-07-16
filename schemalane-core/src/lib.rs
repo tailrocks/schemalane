@@ -240,6 +240,9 @@ pub struct SqlStatementFailed {
 }
 
 pub trait MigrationObserver: Send + Sync {
+    /// Called once after discovery and the authoritative history read, before migrations run.
+    fn on_run_planned(&self, _report: &StatusReport) {}
+
     fn on_migration_start(&self, _event: &MigrationStarted) {}
 
     fn on_migration_finish(&self, _event: &MigrationFinished) {}
@@ -428,6 +431,12 @@ impl SchemalaneMigrator {
             let installed_by = self.resolve_installed_by(client).await?;
             let history = self.load_history(client).await?;
             Self::ensure_no_blocking_history(&migrations, &history)?;
+            observer.on_run_planned(&build_status_report(
+                &self.config.schema,
+                &self.config.history_table,
+                &migrations,
+                &history,
+            ));
             let latest = latest_history_by_script(&history);
             let mut applied_success: HashSet<String> = latest
                 .values()
@@ -600,6 +609,12 @@ impl SchemalaneMigrator {
             self.reset_target_schema(client).await?;
             self.set_search_path(client).await?;
             self.ensure_history_table(client).await?;
+            observer.on_run_planned(&build_status_report(
+                &self.config.schema,
+                &self.config.history_table,
+                &migrations,
+                &[],
+            ));
 
             let installed_by = self.resolve_installed_by(client).await?;
             let mut report = RunReport::default();

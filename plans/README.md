@@ -42,7 +42,7 @@ Wave B — hardening & structure prerequisites:
 | 019 | State-model unit tests + SQL-failure/lock integration tests | P1 | M | 001 | DONE |
 | 020 | Success history row atomic with migration txn | P2 | M | 001, 018, 019 | DONE |
 | 021 | One detached session connection (lock leak, search_path, pool≥3) | P2 | M | 001, 019 | DONE |
-| 022 | CLI stops double discovery/status (`on_run_planned`) | P3 | M | 018, 021 | TODO |
+| 022 | CLI stops double discovery/status (`on_run_planned`) | P3 | M | 018, 021 | DONE |
 | 023 | CLI contract tests: exit codes, JSON shape, delegation, env | P2 | M | (003, 007 help) | TODO |
 | 024 | Macro success-path codegen tests (fixture crate) | P2 | M | — | TODO |
 | 025 | One shared Flyway version parser (`schemalane-version`) | P2 | M | 023 | TODO |
