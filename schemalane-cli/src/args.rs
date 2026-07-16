@@ -40,6 +40,7 @@ pub(crate) enum RootCommand {
 #[derive(Debug, Args)]
 #[command(disable_help_subcommand = true, long_about = None)]
 pub(crate) struct MigrateArgs {
+    /// Migration script directory.
     #[arg(short = 'd', long = "migration-dir", env = "MIGRATION_DIR", default_value = DEFAULT_MIGRATION_DIR)]
     pub(crate) migration_dir: PathBuf,
     #[arg(long, env = "DATABASE_URL")]
@@ -58,8 +59,10 @@ pub(crate) struct CommonDbArgs {
     pub(crate) history_table: String,
     #[arg(long)]
     pub(crate) installed_by: Option<String>,
+    /// Override the advisory lock key (default: derived from schema and history table).
     #[arg(long)]
     pub(crate) advisory_lock_id: Option<i64>,
+    /// Output verbosity level.
     #[arg(long, value_enum)]
     pub(crate) verbosity: Option<Verbosity>,
 }
@@ -77,6 +80,7 @@ pub(crate) enum MigrateCommand {
     },
     /// Drop all schemas and re-apply migrations.
     Fresh {
+        /// Pass "yes" to confirm destructive schema drop.
         #[arg(long)]
         confirm: Option<String>,
     },
