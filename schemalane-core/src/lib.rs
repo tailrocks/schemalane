@@ -2,7 +2,7 @@ use crc32fast::Hasher;
 use deadpool_postgres::Pool;
 use pg_query::protobuf;
 use serde::Serialize;
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
@@ -421,18 +421,30 @@ impl SchemalaneMigrator {
             self.ensure_target_schema(&client).await?;
             self.ensure_history_table(&client).await?;
             let installed_by = self.resolve_installed_by(&client).await?;
-            let mut history = self.load_history(&client).await?;
+            let history = self.load_history(&client).await?;
             Self::ensure_no_blocking_history(&migrations, &history)?;
+            let latest = latest_history_by_script(&history);
+            let mut applied_success: HashSet<String> = latest
+                .values()
+                .filter(|row| row.success)
+                .map(|row| row.script.clone())
+                .collect();
+            let mut next_rank = history
+                .iter()
+                .map(|row| row.installed_rank)
+                .max()
+                .unwrap_or(0)
+                + 1;
 
             let mut report = RunReport::default();
             let total_to_apply = migrations
                 .iter()
-                .filter(|migration| !is_applied_success(migration, &history))
+                .filter(|migration| !applied_success.contains(&migration.script))
                 .count();
             let mut applied_index = 0usize;
 
             for migration in &migrations {
-                if is_applied_success(migration, &history) {
+                if applied_success.contains(&migration.script) {
                     report.skipped += 1;
                     continue;
                 }
@@ -451,21 +463,17 @@ impl SchemalaneMigrator {
 
                 match run_result {
                     Ok(()) => {
-                        let installed_rank = self
-                            .insert_history_row(
-                                &client,
-                                migration,
-                                &installed_by,
-                                execution_time_ms,
-                                true,
-                            )
-                            .await?;
-                        history.push(HistoryRow::from_migration(
+                        self.insert_history_row(
+                            &client,
                             migration,
+                            &installed_by,
                             execution_time_ms,
                             true,
-                            installed_rank,
-                        ));
+                            next_rank,
+                        )
+                        .await?;
+                        next_rank += 1;
+                        applied_success.insert(migration.script.clone());
                         report.applied.push(AppliedMigration {
                             version: migration.version_text.clone(),
                             description: migration.description_display.clone(),
@@ -486,21 +494,27 @@ impl SchemalaneMigrator {
 
                         // MixedStatements is a validation error — do not record a
                         // failed history row because the migration never executed.
-                        if !matches!(err, SchemalaneError::MixedStatements { .. })
-                            && let Err(insert_err) = self
+                        if !matches!(err, SchemalaneError::MixedStatements { .. }) {
+                            match self
                                 .insert_history_row(
-                                &client,
-                                migration,
-                                &installed_by,
-                                execution_time_ms,
-                                false,
-                            )
-                            .await
-                        {
-                            error_message = format!(
-                                "{error_message} (additionally: failed to record failed history row: {insert_err})"
-                            );
+                                    &client,
+                                    migration,
+                                    &installed_by,
+                                    execution_time_ms,
+                                    false,
+                                    next_rank,
+                                )
+                                .await
+                            {
+                                Ok(()) => next_rank += 1,
+                                Err(insert_err) => {
+                                    error_message = format!(
+                                        "{error_message} (additionally: failed to record failed history row: {insert_err})"
+                                    );
+                                }
+                            }
                         }
+                        let _ = next_rank;
 
                         observer.on_migration_failed(&MigrationFailed {
                             migration: migration_info,
@@ -573,6 +587,7 @@ impl SchemalaneMigrator {
             let installed_by = self.resolve_installed_by(&client).await?;
             let mut report = RunReport::default();
             let total_to_apply = migrations.len();
+            let mut next_rank = 1;
 
             for (index, migration) in migrations.iter().enumerate() {
                 let migration_info = migration.info();
@@ -594,8 +609,10 @@ impl SchemalaneMigrator {
                             &installed_by,
                             execution_time_ms,
                             true,
+                            next_rank,
                         )
                         .await?;
+                        next_rank += 1;
                         report.applied.push(AppliedMigration {
                             version: migration.version_text.clone(),
                             description: migration.description_display.clone(),
@@ -614,21 +631,27 @@ impl SchemalaneMigrator {
                     Err(err) => {
                         let mut error_message = err.to_string();
 
-                        if !matches!(err, SchemalaneError::MixedStatements { .. })
-                            && let Err(insert_err) = self
+                        if !matches!(err, SchemalaneError::MixedStatements { .. }) {
+                            match self
                                 .insert_history_row(
-                                &client,
-                                migration,
-                                &installed_by,
-                                execution_time_ms,
-                                false,
-                            )
-                            .await
-                        {
-                            error_message = format!(
-                                "{error_message} (additionally: failed to record failed history row: {insert_err})"
-                            );
+                                    &client,
+                                    migration,
+                                    &installed_by,
+                                    execution_time_ms,
+                                    false,
+                                    next_rank,
+                                )
+                                .await
+                            {
+                                Ok(()) => next_rank += 1,
+                                Err(insert_err) => {
+                                    error_message = format!(
+                                        "{error_message} (additionally: failed to record failed history row: {insert_err})"
+                                    );
+                                }
+                            }
                         }
+                        let _ = next_rank;
 
                         observer.on_migration_failed(&MigrationFailed {
                             migration: migration_info,
@@ -682,8 +705,64 @@ impl SchemalaneMigrator {
     }
 
     fn discover_migrations(&self) -> Result<Vec<DiscoveredMigration>, SchemalaneError> {
-        let mut migrations = self.discover_sql_migrations()?;
-        migrations.extend(self.discover_rust_migrations()?);
+        if !self.config.migrations_dir.exists() {
+            return Err(SchemalaneError::Validation(format!(
+                "migrations directory not found: {}",
+                self.config.migrations_dir.display()
+            )));
+        }
+
+        let mut migrations = Vec::new();
+        for entry in std::fs::read_dir(&self.config.migrations_dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            if !path.is_file() {
+                continue;
+            }
+
+            let Some(extension) = path.extension().and_then(|ext| ext.to_str()) else {
+                continue;
+            };
+            let file_name = path.file_name().and_then(|n| n.to_str()).ok_or_else(|| {
+                SchemalaneError::Validation("non-utf8 migration filename".to_owned())
+            })?;
+
+            let migration = if extension.eq_ignore_ascii_case("sql") {
+                let (version_text, version, description) = parse_sql_filename(file_name)?;
+                let bytes = std::fs::read(&path)?;
+                let checksum = Some(calculate_checksum(file_name, &bytes)?);
+                let content = String::from_utf8(bytes).map_err(|err| {
+                    SchemalaneError::Validation(format!(
+                        "SQL migration {} is not valid UTF-8: {err}",
+                        path.display()
+                    ))
+                })?;
+                DiscoveredMigration {
+                    version,
+                    version_text,
+                    description_display: description.replace('_', " "),
+                    script: file_name.to_owned(),
+                    checksum,
+                    migration_type: MigrationType::Sql,
+                    source: MigrationSource::SqlFile { path, content },
+                }
+            } else if extension.eq_ignore_ascii_case("rs") {
+                let (version_text, version, description) = parse_rust_filename(file_name)?;
+                let content = std::fs::read(&path)?;
+                DiscoveredMigration {
+                    version,
+                    version_text,
+                    description_display: description.replace('_', " "),
+                    script: file_name.to_owned(),
+                    checksum: Some(calculate_checksum(file_name, &content)?),
+                    migration_type: MigrationType::Rust,
+                    source: MigrationSource::RustFile(path),
+                }
+            } else {
+                continue;
+            };
+            migrations.push(migration);
+        }
 
         let mut versions: std::collections::BTreeMap<&ParsedVersion, &str> =
             std::collections::BTreeMap::new();
@@ -709,94 +788,6 @@ impl SchemalaneMigrator {
                 .cmp(&b.version)
                 .then_with(|| a.script.cmp(&b.script))
         });
-        Ok(migrations)
-    }
-
-    fn discover_sql_migrations(&self) -> Result<Vec<DiscoveredMigration>, SchemalaneError> {
-        if !self.config.migrations_dir.exists() {
-            return Err(SchemalaneError::Validation(format!(
-                "migrations directory not found: {}",
-                self.config.migrations_dir.display()
-            )));
-        }
-
-        let mut migrations = Vec::new();
-        for entry in std::fs::read_dir(&self.config.migrations_dir)? {
-            let entry = entry?;
-            let path = entry.path();
-            if !path.is_file() {
-                continue;
-            }
-
-            if !path
-                .extension()
-                .and_then(|ext| ext.to_str())
-                .is_some_and(|ext| ext.eq_ignore_ascii_case("sql"))
-            {
-                continue;
-            }
-
-            let file_name = path.file_name().and_then(|n| n.to_str()).ok_or_else(|| {
-                SchemalaneError::Validation("non-utf8 migration filename".to_owned())
-            })?;
-
-            let (version_text, parsed_version, description) = parse_sql_filename(file_name)?;
-            let content = std::fs::read(&path)?;
-            let checksum = Some(calculate_checksum(file_name, &content)?);
-            let description_display = description.replace('_', " ");
-
-            migrations.push(DiscoveredMigration {
-                version: parsed_version,
-                version_text,
-                description_display,
-                script: file_name.to_owned(),
-                checksum,
-                migration_type: MigrationType::Sql,
-                source: MigrationSource::SqlFile(path),
-            });
-        }
-
-        Ok(migrations)
-    }
-
-    fn discover_rust_migrations(&self) -> Result<Vec<DiscoveredMigration>, SchemalaneError> {
-        let mut migrations = Vec::new();
-
-        for entry in std::fs::read_dir(&self.config.migrations_dir)? {
-            let entry = entry?;
-            let path = entry.path();
-            if !path.is_file() {
-                continue;
-            }
-
-            if !path
-                .extension()
-                .and_then(|ext| ext.to_str())
-                .is_some_and(|ext| ext.eq_ignore_ascii_case("rs"))
-            {
-                continue;
-            }
-
-            let file_name = path.file_name().and_then(|n| n.to_str()).ok_or_else(|| {
-                SchemalaneError::Validation("non-utf8 migration filename".to_owned())
-            })?;
-
-            let (version_text, parsed_version, description) = parse_rust_filename(file_name)?;
-            let content = std::fs::read(&path)?;
-            let checksum = Some(calculate_checksum(file_name, &content)?);
-            let description_display = description.replace('_', " ");
-
-            migrations.push(DiscoveredMigration {
-                version: parsed_version,
-                version_text,
-                description_display,
-                script: file_name.to_owned(),
-                checksum,
-                migration_type: MigrationType::Rust,
-                source: MigrationSource::RustFile(path),
-            });
-        }
-
         Ok(migrations)
     }
 
@@ -890,16 +881,13 @@ impl SchemalaneMigrator {
         let migration_info = migration.info();
 
         match &migration.source {
-            MigrationSource::SqlFile(path) => {
-                let sql = std::fs::read_to_string(path).map_err(|err| {
-                    SchemalaneError::Validation(format!(
-                        "failed to read SQL migration {}: {err}",
-                        path.display()
-                    ))
-                })?;
+            MigrationSource::SqlFile {
+                path: _path,
+                content,
+            } => {
                 let mut client = pool.get().await?;
                 self.set_search_path(&client).await?;
-                execute_sql_migration(&mut client, &sql, &migration_info, observer).await
+                execute_sql_migration(&mut client, content, &migration_info, observer).await
             }
             MigrationSource::RustFile(path) => {
                 let executor = self
@@ -1027,16 +1015,6 @@ CREATE INDEX IF NOT EXISTS {success_idx} ON {table} (\"success\");",
         Ok(current_user)
     }
 
-    async fn next_installed_rank(&self, client: &Client) -> Result<i32, SchemalaneError> {
-        let table = qualified_table(&self.config.schema, &self.config.history_table);
-        let query =
-            format!("SELECT COALESCE(MAX(\"installed_rank\"), 0) + 1 AS next_rank FROM {table}");
-
-        let row = client.query_one(&query, &[]).await?;
-        let next_rank: i32 = row.get("next_rank");
-        Ok(next_rank)
-    }
-
     async fn insert_history_row(
         &self,
         client: &Client,
@@ -1044,8 +1022,8 @@ CREATE INDEX IF NOT EXISTS {success_idx} ON {table} (\"success\");",
         installed_by: &str,
         execution_time: i32,
         success: bool,
-    ) -> Result<i32, SchemalaneError> {
-        let installed_rank = self.next_installed_rank(client).await?;
+        installed_rank: i32,
+    ) -> Result<(), SchemalaneError> {
         let table = qualified_table(&self.config.schema, &self.config.history_table);
 
         let sql = format!(
@@ -1067,7 +1045,7 @@ CREATE INDEX IF NOT EXISTS {success_idx} ON {table} (\"success\");",
         ];
 
         client.execute(&sql, &params).await?;
-        Ok(installed_rank)
+        Ok(())
     }
 
     /// Drop the configured target schema (CASCADE) and recreate it empty.
@@ -1541,12 +1519,6 @@ async fn execute_rust_migration(
     }
 }
 
-fn is_applied_success(migration: &DiscoveredMigration, history: &[HistoryRow]) -> bool {
-    latest_history_by_script(history)
-        .get(migration.script.as_str())
-        .is_some_and(|row| row.success && row.checksum == migration.checksum)
-}
-
 fn latest_history_by_script(history: &[HistoryRow]) -> HashMap<&str, &HistoryRow> {
     let mut latest = HashMap::new();
     for row in history {
@@ -1823,7 +1795,7 @@ impl DiscoveredMigration {
 
 #[derive(Clone)]
 enum MigrationSource {
-    SqlFile(PathBuf),
+    SqlFile { path: PathBuf, content: String },
     RustFile(PathBuf),
 }
 
@@ -1838,27 +1810,6 @@ struct HistoryRow {
     installed_on: String,
     execution_time: i32,
     success: bool,
-}
-
-impl HistoryRow {
-    fn from_migration(
-        migration: &DiscoveredMigration,
-        execution_time: i32,
-        success: bool,
-        installed_rank: i32,
-    ) -> Self {
-        Self {
-            installed_rank,
-            version: Some(migration.version_text.clone()),
-            description: migration.description_display.clone(),
-            migration_type: migration.migration_type.as_history_type().to_owned(),
-            script: migration.script.clone(),
-            checksum: migration.checksum,
-            installed_on: String::new(),
-            execution_time,
-            success,
-        }
-    }
 }
 
 pub fn format_status_table(report: &StatusReport) -> String {
