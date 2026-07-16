@@ -34,7 +34,7 @@ Wave B — hardening & structure prerequisites:
 
 | Plan | Title | Priority | Effort | Depends on | Status |
 |------|-------|----------|--------|------------|--------|
-| 014 | Advisory-lock key scoped to (schema, table) + flag | P2 | S | — | TODO |
+| 014 | Advisory-lock key scoped to (schema, table) + flag | P2 | S | — | DONE |
 | 015 | Release pipeline: idempotent publish, SHA pins, cargo-audit | P2 | M | — | TODO |
 | 016 | Workspace manifest hygiene (shared deps, MSRV, pins) | P2 | S-M | — | TODO |
 | 017 | CLAUDE.md contributor/agent guide | P2 | S | — | TODO |

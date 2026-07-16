@@ -1,7 +1,7 @@
 use deadpool_postgres::{ManagerConfig, Pool, RecyclingMethod};
 use schemalane_core::{
     MigrationState, RustMigrationExecutor, RustTransactionMode, SchemalaneConfig, SchemalaneError,
-    SchemalaneMigrator,
+    SchemalaneMigrator, derive_advisory_lock_id,
 };
 use std::error::Error;
 use std::fs;
@@ -115,6 +115,47 @@ fn status_sees_history_in_mixed_case_schema() -> Result<(), Box<dyn Error + 'sta
         Ok::<(), Box<dyn Error + 'static>>(())
     })?;
 
+    Ok(())
+}
+
+#[test]
+#[ignore = "requires Docker daemon"]
+fn advisory_locks_do_not_contend_across_schemas() -> Result<(), Box<dyn Error + 'static>> {
+    let node = Postgres::default().start()?;
+    let db_url = connection_string(&node)?;
+    let temp = TempDir::new()?;
+    let migrations_dir = temp.path().join("migrations");
+    fs::create_dir_all(&migrations_dir)?;
+    write_migration(
+        &migrations_dir,
+        "V1__create_t.sql",
+        "CREATE TABLE t (id INT);",
+    )?;
+
+    let runtime = tokio::runtime::Runtime::new()?;
+    runtime.block_on(async move {
+        let pool = create_pool(&db_url)?;
+        let holder = pool.get().await?;
+        let public_lock = derive_advisory_lock_id("public", "flyway_schema_history");
+        holder
+            .execute("SELECT pg_advisory_lock($1)", &[&public_lock])
+            .await?;
+
+        let migrator = SchemalaneMigrator::new(SchemalaneConfig {
+            schema: "other".to_owned(),
+            migrations_dir,
+            ..Default::default()
+        });
+        let report = tokio::time::timeout(std::time::Duration::from_secs(5), migrator.up(&pool))
+            .await
+            .expect("different-schema lock must not block")?;
+        assert_eq!(report.applied.len(), 1);
+
+        holder
+            .execute("SELECT pg_advisory_unlock($1)", &[&public_lock])
+            .await?;
+        Ok::<(), Box<dyn Error + 'static>>(())
+    })?;
     Ok(())
 }
 

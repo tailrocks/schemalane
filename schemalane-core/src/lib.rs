@@ -18,7 +18,17 @@ use filename::{ParsedVersion, parse_rust_filename, parse_sql_filename};
 
 pub use schemalane_macros::embed_migrations;
 
-const DEFAULT_ADVISORY_LOCK_ID: i64 = 7_333_654_209_921_337;
+const ADVISORY_LOCK_NAMESPACE: i64 = 7_333_654_209_921_337;
+
+/// Derives the stable, database-local advisory lock key for a migration target.
+pub fn derive_advisory_lock_id(schema: &str, history_table: &str) -> i64 {
+    let mut hasher = Hasher::new();
+    hasher.update(schema.as_bytes());
+    hasher.update(&[0]);
+    hasher.update(history_table.as_bytes());
+    let low = i64::from(hasher.finalize());
+    (ADVISORY_LOCK_NAMESPACE & !0xFFFF_FFFFi64) | low
+}
 
 #[derive(Debug, Clone)]
 pub struct SchemalaneConfig {
@@ -26,7 +36,7 @@ pub struct SchemalaneConfig {
     pub history_table: String,
     pub migrations_dir: PathBuf,
     pub installed_by: Option<String>,
-    pub advisory_lock_id: i64,
+    pub advisory_lock_id: Option<i64>,
 }
 
 impl Default for SchemalaneConfig {
@@ -36,7 +46,7 @@ impl Default for SchemalaneConfig {
             history_table: "flyway_schema_history".to_owned(),
             migrations_dir: PathBuf::from("./migrations"),
             installed_by: None,
-            advisory_lock_id: DEFAULT_ADVISORY_LOCK_ID,
+            advisory_lock_id: None,
         }
     }
 }
@@ -649,21 +659,18 @@ impl SchemalaneMigrator {
         F: Future<Output = Result<T, SchemalaneError>>,
     {
         let lock_client = pool.get().await?;
+        let lock_id = self.config.advisory_lock_id.unwrap_or_else(|| {
+            derive_advisory_lock_id(&self.config.schema, &self.config.history_table)
+        });
 
         lock_client
-            .execute(
-                "SELECT pg_advisory_lock($1)",
-                &[&self.config.advisory_lock_id],
-            )
+            .execute("SELECT pg_advisory_lock($1)", &[&lock_id])
             .await?;
 
         let operation_result = fut.await;
 
         let unlock_result = lock_client
-            .execute(
-                "SELECT pg_advisory_unlock($1)",
-                &[&self.config.advisory_lock_id],
-            )
+            .execute("SELECT pg_advisory_unlock($1)", &[&lock_id])
             .await;
 
         match (operation_result, unlock_result) {
@@ -1913,8 +1920,8 @@ pub fn migrations_dir_exists(path: &Path) -> bool {
 mod tests {
     use super::{
         SchemalaneConfig, SchemalaneError, SchemalaneMigrator, SqlTransactionMode,
-        calculate_checksum, init_migration_project, is_non_transactional, parse_sql_migration,
-        resolve_sql_transaction_mode,
+        calculate_checksum, derive_advisory_lock_id, init_migration_project, is_non_transactional,
+        parse_sql_migration, resolve_sql_transaction_mode,
     };
     use std::fs;
     use tempfile::TempDir;
@@ -1924,6 +1931,24 @@ mod tests {
         for code in [1, 2, 3, 4, 5, 6, 7, 42] {
             assert_eq!(SchemalaneError::Delegated { code }.exit_code(), code);
         }
+    }
+
+    #[test]
+    fn advisory_lock_key_is_stable_and_target_scoped() {
+        let a = derive_advisory_lock_id("public", "flyway_schema_history");
+        assert_eq!(
+            a,
+            derive_advisory_lock_id("public", "flyway_schema_history")
+        );
+        assert_ne!(
+            a,
+            derive_advisory_lock_id("tenant_b", "flyway_schema_history")
+        );
+        assert_ne!(a, derive_advisory_lock_id("public", "other_history"));
+        assert_ne!(
+            derive_advisory_lock_id("ab", "c"),
+            derive_advisory_lock_id("a", "bc")
+        );
     }
 
     // Golden values independently computed with Python's zlib.crc32 from spec §6.3.

@@ -417,7 +417,7 @@ impl EmbeddedRunner {
             history_table: cli.history_table,
             migrations_dir,
             installed_by: cli.installed_by,
-            ..Default::default()
+            advisory_lock_id: cli.advisory_lock_id,
         };
 
         let migrator = (self.build_migrator)(config);
@@ -492,6 +492,10 @@ struct MigrateArgs {
     #[arg(long)]
     installed_by: Option<String>,
 
+    /// Override the advisory lock key (default: derived from schema and history table).
+    #[arg(long)]
+    advisory_lock_id: Option<i64>,
+
     /// Output verbosity level.
     #[arg(long, value_enum)]
     verbosity: Option<Verbosity>,
@@ -534,6 +538,10 @@ struct EmbeddedCli {
 
     #[arg(long)]
     installed_by: Option<String>,
+
+    /// Override the advisory lock key (default: derived from schema and history table).
+    #[arg(long)]
+    advisory_lock_id: Option<i64>,
 
     #[arg(long)]
     dir: Option<PathBuf>,
@@ -639,6 +647,7 @@ async fn run_migrate_cli(args: MigrateArgs) -> Result<(), SchemalaneError> {
         schema,
         history_table,
         installed_by,
+        advisory_lock_id,
         verbosity,
         command,
     } = args;
@@ -649,12 +658,15 @@ async fn run_migrate_cli(args: MigrateArgs) -> Result<(), SchemalaneError> {
     if manifest_path.is_file() {
         return run_via_migration_crate(
             &manifest_path,
-            database_url.as_deref(),
-            &schema,
-            &history_table,
-            installed_by.as_deref(),
-            &command,
-            verbosity,
+            &DelegationOptions {
+                database_url: database_url.as_deref(),
+                schema: &schema,
+                history_table: &history_table,
+                installed_by: installed_by.as_deref(),
+                advisory_lock_id,
+                command: &command,
+                verbosity,
+            },
         );
     }
     if migration_dir != Path::new(DEFAULT_MIGRATION_DIR) {
@@ -689,7 +701,7 @@ async fn run_migrate_cli(args: MigrateArgs) -> Result<(), SchemalaneError> {
         history_table,
         migrations_dir: PathBuf::from(DEFAULT_SQL_DIR),
         installed_by,
-        ..Default::default()
+        advisory_lock_id,
     };
 
     let migrator = SchemalaneMigrator::new(config);
@@ -697,24 +709,21 @@ async fn run_migrate_cli(args: MigrateArgs) -> Result<(), SchemalaneError> {
     run_db_command(&migrator, &pool, db_command, verbosity).await
 }
 
+struct DelegationOptions<'a> {
+    database_url: Option<&'a str>,
+    schema: &'a str,
+    history_table: &'a str,
+    installed_by: Option<&'a str>,
+    advisory_lock_id: Option<i64>,
+    command: &'a MigrateCommand,
+    verbosity: Verbosity,
+}
+
 fn run_via_migration_crate(
     manifest_path: &Path,
-    database_url: Option<&str>,
-    schema: &str,
-    history_table: &str,
-    installed_by: Option<&str>,
-    command: &MigrateCommand,
-    verbosity: Verbosity,
+    options: &DelegationOptions<'_>,
 ) -> Result<(), SchemalaneError> {
-    let (args, envs) = delegation_command_parts(
-        manifest_path,
-        database_url,
-        schema,
-        history_table,
-        installed_by,
-        command,
-        verbosity,
-    );
+    let (args, envs) = delegation_command_parts(manifest_path, options);
     let mut cargo = Command::new("cargo");
     cargo.args(args).envs(envs);
 
@@ -742,12 +751,7 @@ fn run_via_migration_crate(
 /// Build arguments and environment for delegated `cargo run`.
 fn delegation_command_parts(
     manifest_path: &Path,
-    database_url: Option<&str>,
-    schema: &str,
-    history_table: &str,
-    installed_by: Option<&str>,
-    command: &MigrateCommand,
-    verbosity: Verbosity,
+    options: &DelegationOptions<'_>,
 ) -> (Vec<OsString>, Vec<(&'static str, String)>) {
     let mut args = vec![
         OsString::from("run"),
@@ -758,34 +762,41 @@ fn delegation_command_parts(
     let mut envs = Vec::new();
 
     // Deliver secrets via environment. Process arguments are world-readable.
-    if let Some(database_url) = database_url {
+    if let Some(database_url) = options.database_url {
         envs.push(("DATABASE_URL", database_url.to_owned()));
     }
 
     args.extend([
         OsString::from("--schema"),
-        OsString::from(schema),
+        OsString::from(options.schema),
         OsString::from("--history-table"),
-        OsString::from(history_table),
+        OsString::from(options.history_table),
     ]);
 
-    if let Some(installed_by) = installed_by {
+    if let Some(installed_by) = options.installed_by {
         args.extend([
             OsString::from("--installed-by"),
             OsString::from(installed_by),
         ]);
     }
 
+    if let Some(advisory_lock_id) = options.advisory_lock_id {
+        args.extend([
+            OsString::from("--advisory-lock-id"),
+            OsString::from(advisory_lock_id.to_string()),
+        ]);
+    }
+
     args.extend([
         OsString::from("--verbosity"),
-        OsString::from(match verbosity {
+        OsString::from(match options.verbosity {
             Verbosity::Minimal => "minimal",
             Verbosity::Compact => "compact",
             Verbosity::Detailed => "detailed",
         }),
     ]);
 
-    match command {
+    match options.command {
         MigrateCommand::Up => {
             args.push(OsString::from("up"));
         }
@@ -1553,15 +1564,16 @@ mod tests {
 
     #[test]
     fn delegation_never_puts_database_url_in_argv() {
-        let (args, envs) = delegation_command_parts(
-            Path::new("./m/Cargo.toml"),
-            Some("postgres://u:pw-classified@h/db"),
-            "public",
-            "flyway_schema_history",
-            None,
-            &MigrateCommand::Up,
-            Verbosity::Minimal,
-        );
+        let options = super::DelegationOptions {
+            database_url: Some("postgres://u:pw-classified@h/db"),
+            schema: "public",
+            history_table: "flyway_schema_history",
+            installed_by: None,
+            advisory_lock_id: None,
+            command: &MigrateCommand::Up,
+            verbosity: Verbosity::Minimal,
+        };
+        let (args, envs) = delegation_command_parts(Path::new("./m/Cargo.toml"), &options);
         assert!(
             args.iter()
                 .all(|arg| !arg.to_string_lossy().contains("pw-classified"))
