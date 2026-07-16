@@ -243,9 +243,11 @@ pub fn highlight_sql_line(line: &str) -> String {
             continue;
         }
 
-        // Consume the next char
+        // Consume the next char (drop control chars — terminal safety).
         let c = remaining.chars().next().unwrap();
-        result.push(c);
+        if !c.is_control() || c == '\t' {
+            result.push(c);
+        }
         pos += c.len_utf8();
     }
 
@@ -297,6 +299,14 @@ mod tests {
             result.contains("my_column_name"),
             "should preserve identifiers"
         );
+    }
+
+    #[test]
+    fn strips_control_characters() {
+        // Avoid SQL tokens so any ANSI escape could only come from the input.
+        let out = highlight_sql_line("\u{1b}];evil\u{7}");
+        assert!(!out.contains('\u{1b}'));
+        assert!(!out.contains('\u{7}'));
     }
 
     #[test]

@@ -4,7 +4,7 @@ use clap::builder::styling::{AnsiColor, Effects, Styles};
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use comfy_table::{Attribute, Cell, CellAlignment, Color, ContentArrangement, Table, presets};
 use deadpool_postgres::{ManagerConfig, Pool, RecyclingMethod};
-use owo_colors::OwoColorize;
+use owo_colors::{OwoColorize, Stream, Style};
 use schemalane_core::{
     MigrationFailed, MigrationFinished, MigrationObserver, MigrationStarted, MigrationState,
     SchemalaneConfig, SchemalaneError, SchemalaneMigrator, SqlStatementFailed,
@@ -55,6 +55,13 @@ const INDENT: &str = " ";
 const MAX_PREVIEW_WIDTH: usize = 60;
 const STATUS_WIDTH: usize = 7; // "SUCCESS".len() == "FAILED ".len()
 
+/// Remove terminal control characters from file-derived text.
+fn sanitize_terminal(text: &str) -> String {
+    text.chars()
+        .filter(|c| !c.is_control() || *c == '\n' || *c == '\t')
+        .collect()
+}
+
 fn pad_index(index: usize, total: usize) -> String {
     let width = total.to_string().len().max(2);
     format!("{index:0>width$}")
@@ -102,8 +109,8 @@ fn prompt_yes_no(prompt: &str) -> Result<bool, SchemalaneError> {
     let stdin = std::io::stdin();
     let mut reader = stdin.lock();
     loop {
-        print!("{prompt}");
-        std::io::stdout().flush().map_err(SchemalaneError::Io)?;
+        eprint!("{prompt}");
+        std::io::stderr().flush().map_err(SchemalaneError::Io)?;
         let mut answer = String::new();
         reader.read_line(&mut answer).map_err(SchemalaneError::Io)?;
         let trimmed = answer.trim();
@@ -113,7 +120,11 @@ fn prompt_yes_no(prompt: &str) -> Result<bool, SchemalaneError> {
         if trimmed.eq_ignore_ascii_case("no") {
             return Ok(false);
         }
-        println!("{}", "Please answer 'yes' or 'no'.".bright_yellow());
+        eprintln!(
+            "{}",
+            "Please answer 'yes' or 'no'."
+                .if_supports_color(Stream::Stderr, |text| text.bright_yellow())
+        );
     }
 }
 
@@ -158,11 +169,13 @@ impl MigrationObserver for CliProgressObserver {
         let total = pad_index(event.total, event.total);
 
         if event.index > 1 {
-            println!();
+            eprintln!();
         }
-        println!(
+        eprintln!(
             "[{idx}/{total}] {}",
-            event.migration.script.bold().bright_white()
+            sanitize_terminal(&event.migration.script).if_supports_color(Stream::Stderr, |text| {
+                text.style(Style::new().bold().bright_white())
+            })
         );
     }
 
@@ -175,29 +188,35 @@ impl MigrationObserver for CliProgressObserver {
             Verbosity::Minimal => {
                 let padded = format!(
                     "{:<width$}",
-                    event.migration.script,
+                    sanitize_terminal(&event.migration.script),
                     width = self.max_script_len
                 );
-                println!(
+                eprintln!(
                     "[{idx}/{total}] {}     {} {}",
-                    padded.bold().bright_white(),
+                    padded.if_supports_color(Stream::Stderr, |text| {
+                        text.style(Style::new().bold().bright_white())
+                    }),
                     format!("{:<STATUS_WIDTH$}", "SUCCESS")
-                        .bright_green()
-                        .bold(),
-                    format!("({elapsed})").bright_black()
+                        .if_supports_color(Stream::Stderr, |text| {
+                            text.style(Style::new().bright_green().bold())
+                        }),
+                    format!("({elapsed})")
+                        .if_supports_color(Stream::Stderr, |text| text.bright_black())
                 );
             }
             Verbosity::Compact => {
-                println!(
+                eprintln!(
                     "{}{}",
                     INDENT,
-                    format!("Total execution time: {elapsed}").bright_black()
+                    format!("Total execution time: {elapsed}")
+                        .if_supports_color(Stream::Stderr, |text| text.bright_black())
                 );
             }
             Verbosity::Detailed => {
-                println!(
+                eprintln!(
                     "{INDENT}{}",
-                    format!("-- Total execution time: {elapsed}").bright_black()
+                    format!("-- Total execution time: {elapsed}")
+                        .if_supports_color(Stream::Stderr, |text| text.bright_black())
                 );
             }
         }
@@ -215,14 +234,19 @@ impl MigrationObserver for CliProgressObserver {
         if self.verbosity == Verbosity::Minimal {
             let padded = format!(
                 "{:<width$}",
-                event.migration.script,
+                sanitize_terminal(&event.migration.script),
                 width = self.max_script_len
             );
-            println!(
+            eprintln!(
                 "[{idx}/{total}] {}     {} {}",
-                padded.bold().bright_white(),
-                format!("{:<STATUS_WIDTH$}", "FAILED").bright_red().bold(),
-                format!("({elapsed})").bright_black()
+                padded.if_supports_color(Stream::Stderr, |text| {
+                    text.style(Style::new().bold().bright_white())
+                }),
+                format!("{:<STATUS_WIDTH$}", "FAILED").if_supports_color(Stream::Stderr, |text| {
+                    text.style(Style::new().bright_red().bold())
+                }),
+                format!("({elapsed})")
+                    .if_supports_color(Stream::Stderr, |text| text.bright_black())
             );
         }
     }
@@ -239,11 +263,18 @@ impl MigrationObserver for CliProgressObserver {
             "-- Query {} of {}{}",
             event.statement_index, event.total_statements, line_info
         );
-        println!("{INDENT}{}", header.bright_black());
+        eprintln!(
+            "{INDENT}{}",
+            header.if_supports_color(Stream::Stderr, |text| text.bright_black())
+        );
         let pretty = pg_query_fmt::format_statement(&event.statement)
             .unwrap_or_else(|_| event.statement.clone());
         for line in pretty.lines() {
-            println!("{INDENT}{}", highlight_sql_line(line));
+            let sanitized = sanitize_terminal(line);
+            eprintln!(
+                "{INDENT}{}",
+                sanitized.if_supports_color(Stream::Stderr, |value| highlight_sql_line(value))
+            );
         }
     }
 
@@ -254,27 +285,36 @@ impl MigrationObserver for CliProgressObserver {
 
         match self.verbosity {
             Verbosity::Compact => {
-                let preview = truncate_preview(&event.statement_preview, MAX_PREVIEW_WIDTH);
+                let preview = truncate_preview(
+                    &sanitize_terminal(&event.statement_preview),
+                    MAX_PREVIEW_WIDTH,
+                );
                 let padded_preview = format!("{preview:<MAX_PREVIEW_WIDTH$}");
                 let index_str = format!("{idx}/{total}");
-                println!(
+                eprintln!(
                     "{INDENT}{}    {}     {} {}",
-                    index_str.bright_black(),
-                    highlight_sql_line(&padded_preview),
+                    index_str.if_supports_color(Stream::Stderr, |text| text.bright_black()),
+                    padded_preview
+                        .if_supports_color(Stream::Stderr, |value| highlight_sql_line(value)),
                     format!("{:<STATUS_WIDTH$}", "SUCCESS")
-                        .bright_green()
-                        .bold(),
-                    format!("({elapsed})").bright_black()
+                        .if_supports_color(Stream::Stderr, |text| {
+                            text.style(Style::new().bright_green().bold())
+                        }),
+                    format!("({elapsed})")
+                        .if_supports_color(Stream::Stderr, |text| text.bright_black())
                 );
             }
             Verbosity::Detailed => {
-                println!(
+                eprintln!(
                     "{INDENT}{} {} {}",
-                    "--".bright_black(),
-                    "SUCCESS".bright_green().bold(),
-                    format!("({elapsed})").bright_black()
+                    "--".if_supports_color(Stream::Stderr, |text| text.bright_black()),
+                    "SUCCESS".if_supports_color(Stream::Stderr, |text| {
+                        text.style(Style::new().bright_green().bold())
+                    }),
+                    format!("({elapsed})")
+                        .if_supports_color(Stream::Stderr, |text| text.bright_black())
                 );
-                println!();
+                eprintln!();
             }
             Verbosity::Minimal => {}
         }
@@ -291,23 +331,35 @@ impl MigrationObserver for CliProgressObserver {
 
         match self.verbosity {
             Verbosity::Compact => {
-                let preview = truncate_preview(&event.statement_preview, MAX_PREVIEW_WIDTH);
+                let preview = truncate_preview(
+                    &sanitize_terminal(&event.statement_preview),
+                    MAX_PREVIEW_WIDTH,
+                );
                 let padded_preview = format!("{preview:<MAX_PREVIEW_WIDTH$}");
                 let index_str = format!("{idx}/{total}");
-                println!(
+                eprintln!(
                     "{INDENT}{}    {}     {} {}",
-                    index_str.bright_black(),
-                    highlight_sql_line(&padded_preview),
-                    format!("{:<STATUS_WIDTH$}", "FAILED").bright_red().bold(),
-                    format!("({elapsed})").bright_black()
+                    index_str.if_supports_color(Stream::Stderr, |text| text.bright_black()),
+                    padded_preview
+                        .if_supports_color(Stream::Stderr, |value| highlight_sql_line(value)),
+                    format!("{:<STATUS_WIDTH$}", "FAILED")
+                        .if_supports_color(Stream::Stderr, |text| {
+                            text.style(Style::new().bright_red().bold())
+                        }),
+                    format!("({elapsed})")
+                        .if_supports_color(Stream::Stderr, |text| text.bright_black())
                 );
             }
             Verbosity::Detailed => {
-                println!(
+                eprintln!(
                     "{INDENT}{} {} {}",
-                    "--".bright_black(),
-                    format!("{:<STATUS_WIDTH$}", "FAILED").bright_red().bold(),
-                    format!("({elapsed})").bright_black()
+                    "--".if_supports_color(Stream::Stderr, |text| text.bright_black()),
+                    format!("{:<STATUS_WIDTH$}", "FAILED")
+                        .if_supports_color(Stream::Stderr, |text| {
+                            text.style(Style::new().bright_red().bold())
+                        }),
+                    format!("({elapsed})")
+                        .if_supports_color(Stream::Stderr, |text| text.bright_black())
                 );
             }
             Verbosity::Minimal => {}
@@ -749,8 +801,11 @@ async fn connect_with_feedback(
 
     print_branding(command_label);
 
-    print!("Connecting to PostgreSQL {}... ", target.bright_white());
-    std::io::stdout().flush().ok();
+    eprint!(
+        "Connecting to PostgreSQL {}... ",
+        target.if_supports_color(Stream::Stderr, |text| text.bright_white())
+    );
+    std::io::stderr().flush().ok();
 
     let started = Instant::now();
     let pool = create_pool(database_url)?;
@@ -759,20 +814,24 @@ async fn connect_with_feedback(
     match pool.get().await {
         Ok(_client) => {
             let ms = started.elapsed().as_millis();
-            println!(
+            eprintln!(
                 "{} {}",
-                "SUCCESS".green().bold(),
-                format!("({ms} ms)").bright_black()
+                "SUCCESS".if_supports_color(Stream::Stderr, |text| {
+                    text.style(Style::new().green().bold())
+                }),
+                format!("({ms} ms)").if_supports_color(Stream::Stderr, |text| text.bright_black())
             );
-            println!();
+            eprintln!();
             Ok(pool)
         }
         Err(err) => {
             let ms = started.elapsed().as_millis();
-            println!(
+            eprintln!(
                 "{} {}",
-                "FAILED".red().bold(),
-                format!("({ms} ms)").bright_black()
+                "FAILED".if_supports_color(Stream::Stderr, |text| {
+                    text.style(Style::new().red().bold())
+                }),
+                format!("({ms} ms)").if_supports_color(Stream::Stderr, |text| text.bright_black())
             );
             Err(SchemalaneError::Pool(err))
         }
@@ -897,19 +956,35 @@ async fn run_up_command(
     print_status_overview(&status_before);
     print_pending_migrations(&status_before);
 
-    println!("{}", "Migration Progress".bold().bright_white());
-    println!();
+    eprintln!(
+        "{}",
+        "Migration Progress".if_supports_color(Stream::Stderr, |text| {
+            text.style(Style::new().bold().bright_white())
+        })
+    );
+    eprintln!();
 
     let observer = CliProgressObserver::new(verbosity, max_pending_script_len(&status_before));
     let report = match migrator.up_with_observer(pool, &observer).await {
         Ok(report) => report,
         Err(err) => {
-            println!();
-            println!("{}", "Execution Error".bright_red().bold());
+            eprintln!();
+            eprintln!(
+                "{}",
+                "Execution Error".if_supports_color(Stream::Stderr, |text| {
+                    text.style(Style::new().bright_red().bold())
+                })
+            );
             if let Some(last_error) = observer.last_error() {
-                println!("{}", last_error.bright_black());
+                eprintln!(
+                    "{}",
+                    last_error.if_supports_color(Stream::Stderr, |text| text.bright_black())
+                );
             } else {
-                println!("{}", format!("{err}").bright_black());
+                eprintln!(
+                    "{}",
+                    format!("{err}").if_supports_color(Stream::Stderr, |text| text.bright_black())
+                );
             }
             print_error_diagnostics(&status_before, &err);
             return Err(err);
@@ -930,25 +1005,36 @@ async fn run_fresh_command(
     print_status_overview(&status_before);
 
     // Show DANGEROUS warning
-    println!(
+    eprintln!(
         "{}",
         "DANGEROUS: This will drop the target schema (CASCADE), destroying every object in it, then re-apply migrations."
-            .bright_red()
-            .bold()
+            .if_supports_color(Stream::Stderr, |text| {
+                text.style(Style::new().bright_red().bold())
+            })
     );
-    println!();
+    eprintln!();
 
-    println!("{}", "Schema to drop:".bright_white().bold());
-    println!(" - {}", migrator.config().schema.bright_yellow());
-    println!();
+    eprintln!(
+        "{}",
+        "Schema to drop:".if_supports_color(Stream::Stderr, |text| {
+            text.style(Style::new().bright_white().bold())
+        })
+    );
+    eprintln!(
+        " - {}",
+        sanitize_terminal(&migrator.config().schema)
+            .if_supports_color(Stream::Stderr, |text| text.bright_yellow())
+    );
+    eprintln!();
 
     // Determine confirmation
     let confirmed = match confirm {
         Some(value) if value.eq_ignore_ascii_case("yes") => true,
         Some(_) => {
-            println!(
+            eprintln!(
                 "{}",
-                "Invalid --confirm value. Pass --confirm yes to proceed.".bright_red()
+                "Invalid --confirm value. Pass --confirm yes to proceed."
+                    .if_supports_color(Stream::Stderr, |text| text.bright_red())
             );
             return Err(SchemalaneError::FreshRequiresConfirm);
         }
@@ -956,9 +1042,10 @@ async fn run_fresh_command(
             // No --confirm flag: try interactive prompt
             let stdin = std::io::stdin();
             if !stdin.is_terminal() {
-                println!(
+                eprintln!(
                     "{}",
-                    "Non-interactive terminal detected. Use --confirm yes to confirm.".bright_red()
+                    "Non-interactive terminal detected. Use --confirm yes to confirm."
+                        .if_supports_color(Stream::Stderr, |text| text.bright_red())
                 );
                 return Err(SchemalaneError::FreshRequiresConfirm);
             }
@@ -967,23 +1054,42 @@ async fn run_fresh_command(
     };
 
     if !confirmed {
-        println!("{}", "Aborted.".bright_yellow());
+        eprintln!(
+            "{}",
+            "Aborted.".if_supports_color(Stream::Stderr, |text| text.bright_yellow())
+        );
         return Ok(());
     }
 
-    println!("{}", "Migration Progress".bold().bright_white());
-    println!();
+    eprintln!(
+        "{}",
+        "Migration Progress".if_supports_color(Stream::Stderr, |text| {
+            text.style(Style::new().bold().bright_white())
+        })
+    );
+    eprintln!();
 
     let observer = CliProgressObserver::new(verbosity, max_script_len(&status_before));
     let report = match migrator.fresh_with_observer(pool, true, &observer).await {
         Ok(report) => report,
         Err(err) => {
-            println!();
-            println!("{}", "Execution Error".bright_red().bold());
+            eprintln!();
+            eprintln!(
+                "{}",
+                "Execution Error".if_supports_color(Stream::Stderr, |text| {
+                    text.style(Style::new().bright_red().bold())
+                })
+            );
             if let Some(last_error) = observer.last_error() {
-                println!("{}", last_error.bright_black());
+                eprintln!(
+                    "{}",
+                    last_error.if_supports_color(Stream::Stderr, |text| text.bright_black())
+                );
             } else {
-                println!("{}", format!("{err}").bright_black());
+                eprintln!(
+                    "{}",
+                    format!("{err}").if_supports_color(Stream::Stderr, |text| text.bright_black())
+                );
             }
             print_error_diagnostics(&status_before, &err);
             return Err(err);
@@ -997,32 +1103,44 @@ async fn run_fresh_command(
 // ── Display helpers ─────────────────────────────────────────────────────────
 
 fn print_branding(command: &str) {
-    println!();
-    println!(
+    eprintln!();
+    eprintln!(
         "{} {}",
-        "SCHEMALANE".bright_cyan().bold(),
-        env!("CARGO_PKG_VERSION").bright_black()
+        "SCHEMALANE".if_supports_color(Stream::Stderr, |text| {
+            text.style(Style::new().bright_cyan().bold())
+        }),
+        env!("CARGO_PKG_VERSION").if_supports_color(Stream::Stderr, |text| text.bright_black())
     );
-    println!("{}", "PostgreSQL Migration Lane".bright_blue());
-    println!("{} {}", "Command:".bright_black(), command.bright_white());
-    println!();
+    eprintln!(
+        "{}",
+        "PostgreSQL Migration Lane".if_supports_color(Stream::Stderr, |text| text.bright_blue())
+    );
+    eprintln!(
+        "{} {}",
+        "Command:".if_supports_color(Stream::Stderr, |text| text.bright_black()),
+        command.if_supports_color(Stream::Stderr, |text| text.bright_white())
+    );
+    eprintln!();
 }
 
 fn print_status_overview(report: &StatusReport) {
-    println!(
+    eprintln!(
         "{} {}",
-        "Schema:".bright_black(),
-        report.schema.bright_white()
+        "Schema:".if_supports_color(Stream::Stderr, |text| text.bright_black()),
+        sanitize_terminal(&report.schema)
+            .if_supports_color(Stream::Stderr, |text| text.bright_white())
     );
-    println!(
+    eprintln!(
         "{} {}",
-        "History table:".bright_black(),
-        report.history_table.bright_white()
+        "History table:".if_supports_color(Stream::Stderr, |text| text.bright_black()),
+        sanitize_terminal(&report.history_table)
+            .if_supports_color(Stream::Stderr, |text| text.bright_white())
     );
-    println!(
+    eprintln!(
         "{} {}",
-        "Database version:".bright_black(),
-        database_version_label(latest_database_version(report).as_deref()).bright_green()
+        "Database version:".if_supports_color(Stream::Stderr, |text| text.bright_black()),
+        database_version_label(latest_database_version(report).as_deref())
+            .if_supports_color(Stream::Stderr, |text| text.bright_green())
     );
 
     let s = &report.summary;
@@ -1043,9 +1161,13 @@ fn print_status_overview(report: &StatusReport) {
         parts.push(format!("checksum_mismatch={}", s.checksum_mismatch));
     }
     if !parts.is_empty() {
-        println!("{} {}", "Status:".bright_black(), parts.join(" "));
+        eprintln!(
+            "{} {}",
+            "Status:".if_supports_color(Stream::Stderr, |text| text.bright_black()),
+            parts.join(" ")
+        );
     }
-    println!();
+    eprintln!();
 }
 
 fn state_cell(state: MigrationState) -> Cell {
@@ -1111,9 +1233,9 @@ fn print_status_table(report: &StatusReport) {
 
         table.add_row(vec![
             Cell::new(version).set_alignment(CellAlignment::Right),
-            Cell::new(&m.description),
+            Cell::new(sanitize_terminal(&m.description)),
             type_cell(&m.migration_type),
-            Cell::new(&m.script)
+            Cell::new(sanitize_terminal(&m.script))
                 .fg(Color::White)
                 .add_attribute(Attribute::Bold),
             state_cell(m.state),
@@ -1132,18 +1254,23 @@ fn print_pending_migrations(report: &StatusReport) {
         .filter(|entry| entry.state == MigrationState::Pending)
         .collect();
 
-    println!("{} {}", "Pending migrations:".bright_black(), pending.len());
+    eprintln!(
+        "{} {}",
+        "Pending migrations:".if_supports_color(Stream::Stderr, |text| text.bright_black()),
+        pending.len()
+    );
     if pending.is_empty() {
-        println!(
+        eprintln!(
             "{}",
-            "Database is already at the latest version for this crate.".bright_green()
+            "Database is already at the latest version for this crate."
+                .if_supports_color(Stream::Stderr, |text| text.bright_green())
         );
     } else {
         for migration in pending {
-            println!("  - {}", migration.script);
+            eprintln!("  - {}", sanitize_terminal(&migration.script));
         }
     }
-    println!();
+    eprintln!();
 }
 
 fn print_error_diagnostics(report: &StatusReport, err: &SchemalaneError) {
@@ -1172,12 +1299,18 @@ fn script_version_key(script: &str) -> Vec<u64> {
 }
 
 fn print_drift_details(report: &StatusReport) {
-    println!();
-    println!("{}", "Drift Diagnostics".bright_red().bold());
-    println!(
+    eprintln!();
+    eprintln!(
+        "{}",
+        "Drift Diagnostics".if_supports_color(Stream::Stderr, |text| {
+            text.style(Style::new().bright_red().bold())
+        })
+    );
+    eprintln!(
         "{} {}",
-        "Database version:".bright_black(),
-        database_version_label(latest_database_version(report).as_deref()).bright_green()
+        "Database version:".if_supports_color(Stream::Stderr, |text| text.bright_black()),
+        database_version_label(latest_database_version(report).as_deref())
+            .if_supports_color(Stream::Stderr, |text| text.bright_green())
     );
 
     let local_scripts: BTreeSet<String> = report
@@ -1221,42 +1354,72 @@ fn print_drift_details(report: &StatusReport) {
         .collect();
     sort_scripts_by_version(&mut failed_scripts);
 
-    println!("{}", "Files only in database history:".bright_black());
+    eprintln!(
+        "{}",
+        "Files only in database history:"
+            .if_supports_color(Stream::Stderr, |text| text.bright_black())
+    );
     if only_in_database.is_empty() {
-        println!("  - <none>");
+        eprintln!("  - <none>");
     } else {
         for script in only_in_database {
-            println!("  - {}", script.bright_red());
+            eprintln!(
+                "  - {}",
+                sanitize_terminal(&script)
+                    .if_supports_color(Stream::Stderr, |text| text.bright_red())
+            );
         }
     }
 
-    println!("{}", "Files only in local migration crate:".bright_black());
+    eprintln!(
+        "{}",
+        "Files only in local migration crate:"
+            .if_supports_color(Stream::Stderr, |text| text.bright_black())
+    );
     if only_in_crate.is_empty() {
-        println!("  - <none>");
+        eprintln!("  - <none>");
     } else {
         for script in only_in_crate {
-            println!("  - {}", script.bright_yellow());
+            eprintln!(
+                "  - {}",
+                sanitize_terminal(&script)
+                    .if_supports_color(Stream::Stderr, |text| text.bright_yellow())
+            );
         }
     }
 
-    println!("{}", "Checksum mismatches:".bright_black());
+    eprintln!(
+        "{}",
+        "Checksum mismatches:".if_supports_color(Stream::Stderr, |text| text.bright_black())
+    );
     if checksum_mismatch.is_empty() {
-        println!("  - <none>");
+        eprintln!("  - <none>");
     } else {
         for script in checksum_mismatch {
-            println!("  - {}", script.bright_red());
+            eprintln!(
+                "  - {}",
+                sanitize_terminal(&script)
+                    .if_supports_color(Stream::Stderr, |text| text.bright_red())
+            );
         }
     }
 
-    println!("{}", "Failed history entries:".bright_black());
+    eprintln!(
+        "{}",
+        "Failed history entries:".if_supports_color(Stream::Stderr, |text| text.bright_black())
+    );
     if failed_scripts.is_empty() {
-        println!("  - <none>");
+        eprintln!("  - <none>");
     } else {
         for script in failed_scripts {
-            println!("  - {}", script.bright_red());
+            eprintln!(
+                "  - {}",
+                sanitize_terminal(&script)
+                    .if_supports_color(Stream::Stderr, |text| text.bright_red())
+            );
         }
     }
-    println!();
+    eprintln!();
 }
 
 fn latest_database_version(report: &StatusReport) -> Option<String> {
