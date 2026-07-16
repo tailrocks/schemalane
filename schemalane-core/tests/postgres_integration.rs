@@ -835,7 +835,130 @@ fn lock_released_after_successful_up() -> Result<(), Box<dyn Error + 'static>> {
     Ok(())
 }
 
+#[test]
+#[ignore = "requires Docker daemon"]
+fn failed_sql_migration_records_failed_row_on_session_connection()
+-> Result<(), Box<dyn Error + 'static>> {
+    let node = Postgres::default().start()?;
+    let db_url = connection_string(&node)?;
+    let temp = TempDir::new()?;
+    let migrations_dir = temp.path().join("migrations");
+    fs::create_dir_all(&migrations_dir)?;
+    write_migration(
+        &migrations_dir,
+        "V1__session_fail.sql",
+        "CREATE TABLE session_fail(id int); SELECT * FROM absent_session_table;",
+    )?;
+    tokio::runtime::Runtime::new()?.block_on(async move {
+        let pool = create_pool(&db_url)?;
+        let migrator = SchemalaneMigrator::new(SchemalaneConfig {
+            migrations_dir,
+            ..Default::default()
+        });
+        assert!(matches!(
+            migrator.up(&pool).await,
+            Err(SchemalaneError::MigrationExecution { .. })
+        ));
+        assert_eq!(
+            scalar_i64(
+                &pool,
+                "SELECT COUNT(*) AS count FROM public.flyway_schema_history WHERE NOT \"success\""
+            )
+            .await?,
+            1
+        );
+        Ok::<(), Box<dyn Error + 'static>>(())
+    })?;
+    Ok(())
+}
+
+#[test]
+#[ignore = "requires Docker daemon"]
+fn up_works_with_pool_max_size_one() -> Result<(), Box<dyn Error + 'static>> {
+    let node = Postgres::default().start()?;
+    let db_url = connection_string(&node)?;
+    let temp = TempDir::new()?;
+    let migrations_dir = temp.path().join("migrations");
+    fs::create_dir_all(&migrations_dir)?;
+    write_migration(
+        &migrations_dir,
+        "V1__single.sql",
+        "CREATE TABLE single_pool(id int);",
+    )?;
+    tokio::runtime::Runtime::new()?.block_on(async move {
+        let pool = create_pool_with_size(&db_url, 1)?;
+        let migrator = SchemalaneMigrator::new(SchemalaneConfig {
+            migrations_dir,
+            ..Default::default()
+        });
+        let report = tokio::time::timeout(std::time::Duration::from_secs(5), migrator.up(&pool))
+            .await
+            .expect("size-one pool must not deadlock")?;
+        assert_eq!(report.applied.len(), 1);
+        Ok::<(), Box<dyn Error + 'static>>(())
+    })?;
+    Ok(())
+}
+
+#[test]
+#[ignore = "requires Docker daemon"]
+fn cancelled_up_releases_detached_session_lock() -> Result<(), Box<dyn Error + 'static>> {
+    let node = Postgres::default().start()?;
+    let db_url = connection_string(&node)?;
+    let temp = TempDir::new()?;
+    let migrations_dir = temp.path().join("migrations");
+    fs::create_dir_all(&migrations_dir)?;
+    write_rust_migration(&migrations_dir, "V1__sleep.rs")?;
+    tokio::runtime::Runtime::new()?.block_on(async move {
+        let pool = create_pool_with_size(&db_url, 1)?;
+        let mut migrator = SchemalaneMigrator::new(SchemalaneConfig {
+            migrations_dir,
+            ..Default::default()
+        });
+        migrator.register_rust_migration(
+            "V1__sleep.rs",
+            RustMigrationExecutor::new(|_| {
+                Box::pin(async {
+                    tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+                    Ok(())
+                })
+            }),
+        );
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(250), migrator.up(&pool))
+                .await
+                .is_err()
+        );
+        let key = derive_advisory_lock_id("public", "flyway_schema_history");
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            let client = pool.get().await?;
+            let acquired: bool = client
+                .query_one("SELECT pg_try_advisory_lock($1) AS acquired", &[&key])
+                .await?
+                .get("acquired");
+            if acquired {
+                client
+                    .execute("SELECT pg_advisory_unlock($1)", &[&key])
+                    .await?;
+                break;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "detached session lock was not released"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        Ok::<(), Box<dyn Error + 'static>>(())
+    })?;
+    Ok(())
+}
+
 fn create_pool(db_url: &str) -> Result<Pool, Box<dyn Error + 'static>> {
+    create_pool_with_size(db_url, 5)
+}
+
+fn create_pool_with_size(db_url: &str, max_size: usize) -> Result<Pool, Box<dyn Error + 'static>> {
     let pg_config: tokio_postgres::Config = db_url.parse()?;
     let mgr = deadpool_postgres::Manager::from_config(
         pg_config,
@@ -844,7 +967,7 @@ fn create_pool(db_url: &str) -> Result<Pool, Box<dyn Error + 'static>> {
             recycling_method: RecyclingMethod::Fast,
         },
     );
-    Ok(Pool::builder(mgr).max_size(5).build()?)
+    Ok(Pool::builder(mgr).max_size(max_size).build()?)
 }
 
 fn write_migration(

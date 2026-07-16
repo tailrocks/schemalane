@@ -3,7 +3,6 @@ use deadpool_postgres::Pool;
 use pg_query::protobuf;
 use serde::Serialize;
 use std::collections::{BTreeSet, HashMap, HashSet};
-use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::Arc;
@@ -404,7 +403,8 @@ impl SchemalaneMigrator {
 
     /// Transactional SQL migrations commit their history row atomically with the migration.
     /// Non-transactional SQL and Rust migrations record history after execution and therefore
-    /// have at-least-once semantics; make those migrations idempotent.
+    /// have at-least-once semantics; make those migrations idempotent. A pool size of one is
+    /// sufficient because one detached connection owns the complete migration session.
     pub async fn up(&self, pool: &Pool) -> Result<RunReport, SchemalaneError> {
         self.up_with_observer(pool, &NoopMigrationObserver).await
     }
@@ -419,12 +419,14 @@ impl SchemalaneMigrator {
     {
         let migrations = self.discover_migrations()?;
         self.ensure_rust_executors_registered(&migrations)?;
-        self.with_advisory_lock(pool, async {
-            let client = pool.get().await?;
-            self.ensure_target_schema(&client).await?;
-            self.ensure_history_table(&client).await?;
-            let installed_by = self.resolve_installed_by(&client).await?;
-            let history = self.load_history(&client).await?;
+        let (mut session, lock_id) = self.acquire_locked_session(pool).await?;
+        let result = async {
+            let client: &mut Client = &mut session;
+            self.ensure_target_schema(client).await?;
+            self.set_search_path(client).await?;
+            self.ensure_history_table(client).await?;
+            let installed_by = self.resolve_installed_by(client).await?;
+            let history = self.load_history(client).await?;
             Self::ensure_no_blocking_history(&migrations, &history)?;
             let latest = latest_history_by_script(&history);
             let mut applied_success: HashSet<String> = latest
@@ -463,7 +465,7 @@ impl SchemalaneMigrator {
                 let started = Instant::now();
                 let history_write = self.history_write(migration, &installed_by, next_rank);
                 let run_result = self
-                    .apply_migration(pool, migration, observer, &history_write)
+                    .apply_migration(client, migration, observer, &history_write)
                     .await;
                 let execution_time_ms = millis_i32(started.elapsed().as_millis());
 
@@ -471,7 +473,7 @@ impl SchemalaneMigrator {
                     Ok(applied) => {
                         if applied == Applied::NeedsHistoryRow {
                             self.insert_history_row(
-                                &client,
+                                client,
                                 migration,
                                 &installed_by,
                                 execution_time_ms,
@@ -505,7 +507,7 @@ impl SchemalaneMigrator {
                         if !matches!(err, SchemalaneError::MixedStatements { .. }) {
                             match self
                                 .insert_history_row(
-                                    &client,
+                                    client,
                                     migration,
                                     &installed_by,
                                     execution_time_ms,
@@ -544,8 +546,9 @@ impl SchemalaneMigrator {
             }
 
             Ok(report)
-        })
-        .await
+        }
+        .await;
+        Self::finish_locked_session(&session, lock_id, result).await
     }
 
     pub async fn status(&self, pool: &Pool) -> Result<StatusReport, SchemalaneError> {
@@ -568,7 +571,8 @@ impl SchemalaneMigrator {
 
     /// Transactional SQL migrations commit their history row atomically with the migration.
     /// Non-transactional SQL and Rust migrations record history after execution and therefore
-    /// have at-least-once semantics; make those migrations idempotent.
+    /// have at-least-once semantics; make those migrations idempotent. A pool size of one is
+    /// sufficient because one detached connection owns the complete migration session.
     pub async fn fresh(&self, pool: &Pool, confirmed: bool) -> Result<RunReport, SchemalaneError> {
         self.fresh_with_observer(pool, confirmed, &NoopMigrationObserver)
             .await
@@ -590,12 +594,14 @@ impl SchemalaneMigrator {
         let migrations = self.discover_migrations()?;
         self.ensure_rust_executors_registered(&migrations)?;
 
-        self.with_advisory_lock(pool, async {
-            let client = pool.get().await?;
-            self.reset_target_schema(&client).await?;
-            self.ensure_history_table(&client).await?;
+        let (mut session, lock_id) = self.acquire_locked_session(pool).await?;
+        let result = async {
+            let client: &mut Client = &mut session;
+            self.reset_target_schema(client).await?;
+            self.set_search_path(client).await?;
+            self.ensure_history_table(client).await?;
 
-            let installed_by = self.resolve_installed_by(&client).await?;
+            let installed_by = self.resolve_installed_by(client).await?;
             let mut report = RunReport::default();
             let total_to_apply = migrations.len();
             let mut next_rank = 1;
@@ -611,7 +617,7 @@ impl SchemalaneMigrator {
                 let started = Instant::now();
                 let history_write = self.history_write(migration, &installed_by, next_rank);
                 let run_result = self
-                    .apply_migration(pool, migration, observer, &history_write)
+                    .apply_migration(client, migration, observer, &history_write)
                     .await;
                 let execution_time_ms = millis_i32(started.elapsed().as_millis());
 
@@ -619,7 +625,7 @@ impl SchemalaneMigrator {
                     Ok(applied) => {
                         if applied == Applied::NeedsHistoryRow {
                             self.insert_history_row(
-                                &client,
+                                client,
                                 migration,
                                 &installed_by,
                                 execution_time_ms,
@@ -650,7 +656,7 @@ impl SchemalaneMigrator {
                         if !matches!(err, SchemalaneError::MixedStatements { .. }) {
                             match self
                                 .insert_history_row(
-                                    &client,
+                                    client,
                                     migration,
                                     &installed_by,
                                     execution_time_ms,
@@ -689,35 +695,37 @@ impl SchemalaneMigrator {
             }
 
             Ok(report)
-        })
-        .await
+        }
+        .await;
+        Self::finish_locked_session(&session, lock_id, result).await
     }
 
-    async fn with_advisory_lock<T, F>(&self, pool: &Pool, fut: F) -> Result<T, SchemalaneError>
-    where
-        F: Future<Output = Result<T, SchemalaneError>>,
-    {
-        let lock_client = pool.get().await?;
+    async fn acquire_locked_session(
+        &self,
+        pool: &Pool,
+    ) -> Result<(deadpool_postgres::ClientWrapper, i64), SchemalaneError> {
+        let pooled = pool.get().await?;
+        // Never return this stateful session to the caller's pool. Dropping the detached socket
+        // releases its advisory lock and search_path on errors, panics, and cancellation too.
+        let session = deadpool_postgres::Object::take(pooled);
         let lock_id = self.config.advisory_lock_id.unwrap_or_else(|| {
             derive_advisory_lock_id(&self.config.schema, &self.config.history_table)
         });
-
-        lock_client
+        session
             .execute("SELECT pg_advisory_lock($1)", &[&lock_id])
             .await?;
+        Ok((session, lock_id))
+    }
 
-        let operation_result = fut.await;
-
-        let unlock_result = lock_client
+    async fn finish_locked_session<T>(
+        session: &Client,
+        lock_id: i64,
+        result: Result<T, SchemalaneError>,
+    ) -> Result<T, SchemalaneError> {
+        let _ = session
             .execute("SELECT pg_advisory_unlock($1)", &[&lock_id])
             .await;
-
-        match (operation_result, unlock_result) {
-            (Ok(value), Ok(_)) => Ok(value),
-            (Err(err), Ok(_)) => Err(err),
-            (Ok(_), Err(err)) => Err(SchemalaneError::Db(err)),
-            (Err(err), Err(_unlock_err)) => Err(err),
-        }
+        result
     }
 
     fn discover_migrations(&self) -> Result<Vec<DiscoveredMigration>, SchemalaneError> {
@@ -887,7 +895,7 @@ impl SchemalaneMigrator {
 
     async fn apply_migration<O>(
         &self,
-        pool: &Pool,
+        client: &mut Client,
         migration: &DiscoveredMigration,
         observer: &O,
         history_write: &HistoryWrite<'_>,
@@ -902,16 +910,8 @@ impl SchemalaneMigrator {
                 path: _path,
                 content,
             } => {
-                let mut client = pool.get().await?;
-                self.set_search_path(&client).await?;
-                execute_sql_migration(
-                    &mut client,
-                    content,
-                    &migration_info,
-                    observer,
-                    history_write,
-                )
-                .await
+                execute_sql_migration(client, content, &migration_info, observer, history_write)
+                    .await
             }
             MigrationSource::RustFile(path) => {
                 let executor = self
@@ -924,9 +924,7 @@ impl SchemalaneMigrator {
                             path.display()
                         ))
                     })?;
-                let mut client = pool.get().await?;
-                self.set_search_path(&client).await?;
-                execute_rust_migration(&mut client, executor)
+                execute_rust_migration(client, executor)
                     .await
                     .map_err(SchemalaneError::Db)?;
                 Ok(Applied::NeedsHistoryRow)
