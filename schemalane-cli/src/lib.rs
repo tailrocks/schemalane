@@ -414,23 +414,22 @@ impl EmbeddedRunner {
     {
         let cli = EmbeddedCli::parse_from(args);
 
-        let db_command: DbCommand = cli.command.into();
-        let pool = connect_with_feedback(&cli.database_url, db_command.label()).await?;
+        let pool = connect_with_feedback(&cli.database_url, cli.command.label()).await?;
         let migrations_dir = cli
             .dir
             .clone()
             .unwrap_or_else(|| PathBuf::from(self.migrations_dir));
 
         let config = SchemalaneConfig::new()
-            .with_schema(cli.schema)
-            .with_history_table(cli.history_table)
+            .with_schema(cli.common.schema)
+            .with_history_table(cli.common.history_table)
             .with_migrations_dir(migrations_dir)
-            .with_installed_by(cli.installed_by)
-            .with_advisory_lock_id(cli.advisory_lock_id);
+            .with_installed_by(cli.common.installed_by)
+            .with_advisory_lock_id(cli.common.advisory_lock_id);
 
         let migrator = (self.build_migrator)(config);
-        let verbosity = cli.verbosity.unwrap_or_default();
-        run_db_command(&migrator, &pool, db_command, verbosity).await
+        let verbosity = cli.common.verbosity.unwrap_or_default();
+        run_db_command(&migrator, &pool, cli.command, verbosity).await
     }
 }
 
@@ -491,53 +490,15 @@ struct MigrateArgs {
     #[arg(long, env = "DATABASE_URL")]
     database_url: Option<String>,
 
-    #[arg(long, default_value = "public")]
-    schema: String,
-
-    #[arg(long, default_value = "flyway_schema_history")]
-    history_table: String,
-
-    #[arg(long)]
-    installed_by: Option<String>,
-
-    /// Override the advisory lock key (default: derived from schema and history table).
-    #[arg(long)]
-    advisory_lock_id: Option<i64>,
-
-    /// Output verbosity level.
-    #[arg(long, value_enum)]
-    verbosity: Option<Verbosity>,
+    #[command(flatten)]
+    common: CommonDbArgs,
 
     #[command(subcommand)]
     command: Option<MigrateCommand>,
 }
 
-#[derive(Debug, Subcommand)]
-enum MigrateCommand {
-    /// Apply pending migrations (default).
-    Up,
-    /// Show migration status.
-    Status {
-        #[arg(long, value_enum, default_value_t = StatusFormat::Table)]
-        format: StatusFormat,
-
-        #[arg(long)]
-        fail_on_pending: bool,
-    },
-    /// Drop all schemas and re-apply migrations.
-    Fresh {
-        /// Pass "yes" to confirm destructive schema drop.
-        #[arg(long)]
-        confirm: Option<String>,
-    },
-}
-
-#[derive(Debug, Parser)]
-#[command(styles = HELP_STYLES)]
-struct EmbeddedCli {
-    #[arg(long, env = "DATABASE_URL")]
-    database_url: String,
-
+#[derive(Debug, Args)]
+struct CommonDbArgs {
     #[arg(long, default_value = "public")]
     schema: String,
 
@@ -551,19 +512,13 @@ struct EmbeddedCli {
     #[arg(long)]
     advisory_lock_id: Option<i64>,
 
-    #[arg(long)]
-    dir: Option<PathBuf>,
-
     /// Output verbosity level.
     #[arg(long, value_enum)]
     verbosity: Option<Verbosity>,
-
-    #[command(subcommand)]
-    command: EmbeddedCommand,
 }
 
 #[derive(Debug, Subcommand)]
-enum EmbeddedCommand {
+enum MigrateCommand {
     /// Apply pending migrations (default).
     Up,
     /// Show migration status.
@@ -588,39 +543,28 @@ enum StatusFormat {
     Json,
 }
 
-enum DbCommand {
-    Up,
-    Status {
-        format: StatusFormat,
-        fail_on_pending: bool,
-    },
-    Fresh {
-        confirm: Option<String>,
-    },
+#[derive(Debug, Parser)]
+#[command(styles = HELP_STYLES)]
+struct EmbeddedCli {
+    #[arg(long, env = "DATABASE_URL")]
+    database_url: String,
+
+    #[command(flatten)]
+    common: CommonDbArgs,
+
+    #[arg(long)]
+    dir: Option<PathBuf>,
+
+    #[command(subcommand)]
+    command: MigrateCommand,
 }
 
-impl DbCommand {
+impl MigrateCommand {
     fn label(&self) -> &'static str {
         match self {
             Self::Up => "migrate up",
             Self::Status { .. } => "migrate status",
             Self::Fresh { .. } => "migrate fresh",
-        }
-    }
-}
-
-impl From<EmbeddedCommand> for DbCommand {
-    fn from(command: EmbeddedCommand) -> Self {
-        match command {
-            EmbeddedCommand::Up => Self::Up,
-            EmbeddedCommand::Status {
-                format,
-                fail_on_pending,
-            } => Self::Status {
-                format,
-                fail_on_pending,
-            },
-            EmbeddedCommand::Fresh { confirm } => Self::Fresh { confirm },
         }
     }
 }
@@ -652,11 +596,14 @@ async fn run_migrate_cli(args: MigrateArgs) -> Result<(), SchemalaneError> {
     let MigrateArgs {
         migration_dir,
         database_url,
-        schema,
-        history_table,
-        installed_by,
-        advisory_lock_id,
-        verbosity,
+        common:
+            CommonDbArgs {
+                schema,
+                history_table,
+                installed_by,
+                advisory_lock_id,
+                verbosity,
+            },
         command,
     } = args;
     let command = command.unwrap_or(MigrateCommand::Up);
@@ -690,19 +637,7 @@ async fn run_migrate_cli(args: MigrateArgs) -> Result<(), SchemalaneError> {
         )
     })?;
 
-    let db_command = match command {
-        MigrateCommand::Up => DbCommand::Up,
-        MigrateCommand::Status {
-            format,
-            fail_on_pending,
-        } => DbCommand::Status {
-            format,
-            fail_on_pending,
-        },
-        MigrateCommand::Fresh { confirm } => DbCommand::Fresh { confirm },
-    };
-
-    let pool = connect_with_feedback(&database_url, db_command.label()).await?;
+    let pool = connect_with_feedback(&database_url, command.label()).await?;
 
     let config = SchemalaneConfig::new()
         .with_schema(schema)
@@ -713,7 +648,7 @@ async fn run_migrate_cli(args: MigrateArgs) -> Result<(), SchemalaneError> {
 
     let migrator = SchemalaneMigrator::new(config);
 
-    run_db_command(&migrator, &pool, db_command, verbosity).await
+    run_db_command(&migrator, &pool, command, verbosity).await
 }
 
 struct DelegationOptions<'a> {
@@ -983,12 +918,12 @@ fn parse_host_port(value: &str) -> Option<(String, Option<u16>)> {
 async fn run_db_command(
     migrator: &SchemalaneMigrator,
     pool: &Pool,
-    command: DbCommand,
+    command: MigrateCommand,
     verbosity: Verbosity,
 ) -> Result<(), SchemalaneError> {
     match command {
-        DbCommand::Up => run_up_command(migrator, pool, verbosity).await?,
-        DbCommand::Status {
+        MigrateCommand::Up => run_up_command(migrator, pool, verbosity).await?,
+        MigrateCommand::Status {
             format,
             fail_on_pending,
         } => {
@@ -1009,7 +944,7 @@ async fn run_db_command(
                 should_fail_on_pending(&report)?;
             }
         }
-        DbCommand::Fresh { confirm } => {
+        MigrateCommand::Fresh { confirm } => {
             run_fresh_command(migrator, pool, confirm.as_deref(), verbosity).await?;
         }
     }
@@ -1026,33 +961,37 @@ async fn run_up_command(
     let report = match migrator.up_with_observer(pool, &observer).await {
         Ok(report) => report,
         Err(err) => {
-            eprintln!();
-            eprintln!(
-                "{}",
-                "Execution Error".if_supports_color(Stream::Stderr, |text| {
-                    text.style(Style::new().bright_red().bold())
-                })
-            );
-            if let Some(last_error) = observer.last_error() {
-                eprintln!(
-                    "{}",
-                    last_error.if_supports_color(Stream::Stderr, |text| text.bright_black())
-                );
-            } else {
-                eprintln!(
-                    "{}",
-                    format!("{err}").if_supports_color(Stream::Stderr, |text| text.bright_black())
-                );
-            }
-            if let Some(report) = observer.planned_report() {
-                print_error_diagnostics(&report, &err);
-            }
+            report_execution_error(&observer, &err);
             return Err(err);
         }
     };
 
     let _ = report;
     Ok(())
+}
+
+fn report_execution_error(observer: &CliProgressObserver, err: &SchemalaneError) {
+    eprintln!();
+    eprintln!(
+        "{}",
+        "Execution Error".if_supports_color(Stream::Stderr, |text| {
+            text.style(Style::new().bright_red().bold())
+        })
+    );
+    if let Some(last_error) = observer.last_error() {
+        eprintln!(
+            "{}",
+            last_error.if_supports_color(Stream::Stderr, |text| text.bright_black())
+        );
+    } else {
+        eprintln!(
+            "{}",
+            format!("{err}").if_supports_color(Stream::Stderr, |text| text.bright_black())
+        );
+    }
+    if let Some(report) = observer.planned_report() {
+        print_error_diagnostics(&report, err);
+    }
 }
 
 async fn run_fresh_command(
@@ -1122,27 +1061,7 @@ async fn run_fresh_command(
     let report = match migrator.fresh_with_observer(pool, true, &observer).await {
         Ok(report) => report,
         Err(err) => {
-            eprintln!();
-            eprintln!(
-                "{}",
-                "Execution Error".if_supports_color(Stream::Stderr, |text| {
-                    text.style(Style::new().bright_red().bold())
-                })
-            );
-            if let Some(last_error) = observer.last_error() {
-                eprintln!(
-                    "{}",
-                    last_error.if_supports_color(Stream::Stderr, |text| text.bright_black())
-                );
-            } else {
-                eprintln!(
-                    "{}",
-                    format!("{err}").if_supports_color(Stream::Stderr, |text| text.bright_black())
-                );
-            }
-            if let Some(report) = observer.planned_report() {
-                print_error_diagnostics(&report, &err);
-            }
+            report_execution_error(&observer, &err);
             return Err(err);
         }
     };
@@ -1796,7 +1715,7 @@ mod tests {
         let cli = Cli::try_parse_from(["schemalane", "migrate", "--verbosity", "detailed", "up"])
             .expect("CLI args should parse");
         let args = unwrap_migrate(cli);
-        assert_eq!(args.verbosity, Some(Verbosity::Detailed));
+        assert_eq!(args.common.verbosity, Some(Verbosity::Detailed));
     }
 
     #[test]
