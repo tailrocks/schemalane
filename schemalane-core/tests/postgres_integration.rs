@@ -146,6 +146,63 @@ CREATE TABLE cake (
 
 #[test]
 #[ignore = "requires Docker daemon"]
+fn fresh_drops_only_target_schema() -> Result<(), Box<dyn Error + 'static>> {
+    let node = Postgres::default().start()?;
+    let db_url = connection_string(&node)?;
+
+    let temp = TempDir::new()?;
+    let migrations_dir = temp.path().join("migrations");
+    fs::create_dir_all(&migrations_dir)?;
+    write_migration(
+        &migrations_dir,
+        "V1__create_cake.sql",
+        "CREATE TABLE cake (id SERIAL PRIMARY KEY);",
+    )?;
+
+    let runtime = tokio::runtime::Runtime::new()?;
+    runtime.block_on(async move {
+        let pool = create_pool(&db_url)?;
+        let migrator = SchemalaneMigrator::new(SchemalaneConfig {
+            migrations_dir,
+            ..Default::default()
+        });
+
+        migrator.up(&pool).await?;
+        {
+            let client = pool.get().await?;
+            client
+                .batch_execute("CREATE SCHEMA other_app; CREATE TABLE other_app.keep_me (id INT);")
+                .await?;
+        }
+
+        let report = migrator.fresh(&pool, true).await?;
+        assert_eq!(report.applied.len(), 1);
+
+        let client = pool.get().await?;
+        let row = client
+            .query_one(
+                "SELECT to_regclass('other_app.keep_me') IS NOT NULL AS exists",
+                &[],
+            )
+            .await?;
+        assert!(row.get::<_, bool>("exists"));
+        drop(client);
+
+        let history_count = scalar_i64(
+            &pool,
+            "SELECT COUNT(*) AS count FROM public.flyway_schema_history",
+        )
+        .await?;
+        assert_eq!(history_count, 1);
+
+        Ok::<(), Box<dyn Error + 'static>>(())
+    })?;
+
+    Ok(())
+}
+
+#[test]
+#[ignore = "requires Docker daemon"]
 fn status_detects_checksum_mismatch() -> Result<(), Box<dyn Error + 'static>> {
     let node = Postgres::default().start()?;
     let db_url = connection_string(&node)?;

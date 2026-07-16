@@ -548,9 +548,7 @@ impl SchemalaneMigrator {
 
         self.with_advisory_lock(pool, async {
             let client = pool.get().await?;
-            let schemas = Self::list_user_schemas(&client).await?;
-            Self::drop_schemas(&client, &schemas).await?;
-            self.ensure_target_schema(&client).await?;
+            self.reset_target_schema(&client).await?;
             self.ensure_history_table(&client).await?;
 
             let installed_by = self.resolve_installed_by(&client).await?;
@@ -1050,37 +1048,16 @@ CREATE INDEX IF NOT EXISTS {success_idx} ON {table} (\"success\");",
         Ok(installed_rank)
     }
 
-    /// List all user-created schemas in the database (excludes system schemas).
-    /// The `public` schema is always returned last.
-    pub async fn list_user_schemas(client: &Client) -> Result<Vec<String>, SchemalaneError> {
-        let rows = client
-            .query(
-                "SELECT nspname FROM pg_catalog.pg_namespace \
-                 WHERE nspname NOT LIKE 'pg_%' \
-                   AND nspname != 'information_schema' \
-                 ORDER BY CASE WHEN nspname = 'public' THEN 1 ELSE 0 END, nspname",
-                &[],
-            )
-            .await?;
-
-        let mut schemas = Vec::with_capacity(rows.len());
-        for row in rows {
-            let name: String = row.get("nspname");
-            schemas.push(name);
-        }
-        Ok(schemas)
-    }
-
-    /// Drop the given schemas with CASCADE and re-create the `public` schema.
-    pub async fn drop_schemas(client: &Client, schemas: &[String]) -> Result<(), SchemalaneError> {
-        for schema in schemas {
-            let sql = format!("DROP SCHEMA IF EXISTS {} CASCADE", quote_ident(schema));
-            client.batch_execute(&sql).await?;
-        }
-        client
-            .batch_execute("CREATE SCHEMA IF NOT EXISTS public")
-            .await?;
-        Ok(())
+    /// Drop the configured target schema (CASCADE) and recreate it empty.
+    /// `fresh` is scoped to this single schema per `SCHEMALANE_SPEC.md` §9 —
+    /// it must never touch other schemas in the database.
+    async fn reset_target_schema(&self, client: &Client) -> Result<(), SchemalaneError> {
+        let sql = format!(
+            "DROP SCHEMA IF EXISTS {} CASCADE",
+            quote_ident(&self.config.schema)
+        );
+        client.batch_execute(&sql).await?;
+        self.ensure_target_schema(client).await
     }
 }
 

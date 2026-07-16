@@ -928,23 +928,14 @@ async fn run_fresh_command(
     // Show DANGEROUS warning
     println!(
         "{}",
-        "DANGEROUS: This will delete ALL schemas in the database using CASCADE and re-apply migrations."
+        "DANGEROUS: This will drop the target schema (CASCADE), destroying every object in it, then re-apply migrations."
             .bright_red()
             .bold()
     );
     println!();
 
-    // List schemas that will be dropped
-    let client = pool.get().await.map_err(SchemalaneError::Pool)?;
-    let schemas = SchemalaneMigrator::list_user_schemas(&client).await?;
-    if schemas.is_empty() {
-        println!("{}", "No user schemas found.".bright_black());
-    } else {
-        println!("{}", "Schemas to delete:".bright_white().bold());
-        for schema in &schemas {
-            println!(" - {}", schema.bright_yellow());
-        }
-    }
+    println!("{}", "Schema to drop:".bright_white().bold());
+    println!(" - {}", migrator.config().schema.bright_yellow());
     println!();
 
     // Determine confirmation
