@@ -617,7 +617,7 @@ async fn run_root_cli(cli: Cli) -> Result<(), SchemalaneError> {
             );
             println!("Run migrations via:");
             println!(
-                "cargo run --manifest-path {}/Cargo.toml -- --database-url \"$DATABASE_URL\" up",
+                "DATABASE_URL=\"postgres://…\" cargo run --manifest-path {}/Cargo.toml -- up",
                 report.root.display()
             );
             Ok(())
@@ -700,57 +700,17 @@ fn run_via_migration_crate(
     command: &MigrateCommand,
     verbosity: Verbosity,
 ) -> Result<(), SchemalaneError> {
+    let (args, envs) = delegation_command_parts(
+        manifest_path,
+        database_url,
+        schema,
+        history_table,
+        installed_by,
+        command,
+        verbosity,
+    );
     let mut cargo = Command::new("cargo");
-    cargo
-        .arg("run")
-        .arg("--manifest-path")
-        .arg(manifest_path)
-        .arg("--");
-
-    if let Some(database_url) = database_url {
-        cargo.arg("--database-url").arg(database_url);
-    }
-
-    cargo
-        .arg("--schema")
-        .arg(schema)
-        .arg("--history-table")
-        .arg(history_table);
-
-    if let Some(installed_by) = installed_by {
-        cargo.arg("--installed-by").arg(installed_by);
-    }
-
-    cargo.arg("--verbosity").arg(match verbosity {
-        Verbosity::Minimal => "minimal",
-        Verbosity::Compact => "compact",
-        Verbosity::Detailed => "detailed",
-    });
-
-    match command {
-        MigrateCommand::Up => {
-            cargo.arg("up");
-        }
-        MigrateCommand::Status {
-            format,
-            fail_on_pending,
-        } => {
-            cargo.arg("status");
-            cargo.arg("--format").arg(match format {
-                StatusFormat::Table => "table",
-                StatusFormat::Json => "json",
-            });
-            if *fail_on_pending {
-                cargo.arg("--fail-on-pending");
-            }
-        }
-        MigrateCommand::Fresh { confirm } => {
-            cargo.arg("fresh");
-            if let Some(value) = confirm {
-                cargo.arg("--confirm").arg(value);
-            }
-        }
-    }
+    cargo.args(args).envs(envs);
 
     let status = cargo.status().map_err(|err| {
         SchemalaneError::Io(std::io::Error::new(
@@ -771,6 +731,82 @@ fn run_via_migration_crate(
             code: status.code().unwrap_or(1),
         })
     }
+}
+
+/// Build arguments and environment for delegated `cargo run`.
+fn delegation_command_parts(
+    manifest_path: &Path,
+    database_url: Option<&str>,
+    schema: &str,
+    history_table: &str,
+    installed_by: Option<&str>,
+    command: &MigrateCommand,
+    verbosity: Verbosity,
+) -> (Vec<OsString>, Vec<(&'static str, String)>) {
+    let mut args = vec![
+        OsString::from("run"),
+        OsString::from("--manifest-path"),
+        manifest_path.as_os_str().to_owned(),
+        OsString::from("--"),
+    ];
+    let mut envs = Vec::new();
+
+    // Deliver secrets via environment. Process arguments are world-readable.
+    if let Some(database_url) = database_url {
+        envs.push(("DATABASE_URL", database_url.to_owned()));
+    }
+
+    args.extend([
+        OsString::from("--schema"),
+        OsString::from(schema),
+        OsString::from("--history-table"),
+        OsString::from(history_table),
+    ]);
+
+    if let Some(installed_by) = installed_by {
+        args.extend([
+            OsString::from("--installed-by"),
+            OsString::from(installed_by),
+        ]);
+    }
+
+    args.extend([
+        OsString::from("--verbosity"),
+        OsString::from(match verbosity {
+            Verbosity::Minimal => "minimal",
+            Verbosity::Compact => "compact",
+            Verbosity::Detailed => "detailed",
+        }),
+    ]);
+
+    match command {
+        MigrateCommand::Up => {
+            args.push(OsString::from("up"));
+        }
+        MigrateCommand::Status {
+            format,
+            fail_on_pending,
+        } => {
+            args.extend([
+                OsString::from("status"),
+                OsString::from("--format"),
+                OsString::from(match format {
+                    StatusFormat::Table => "table",
+                    StatusFormat::Json => "json",
+                }),
+            ]);
+            if *fail_on_pending {
+                args.push(OsString::from("--fail-on-pending"));
+            }
+        }
+        MigrateCommand::Fresh { confirm } => {
+            args.push(OsString::from("fresh"));
+            if let Some(value) = confirm {
+                args.extend([OsString::from("--confirm"), OsString::from(value)]);
+            }
+        }
+    }
+    (args, envs)
 }
 
 // ── Database connection ─────────────────────────────────────────────────────
@@ -1480,11 +1516,12 @@ fn database_version_label(version: Option<&str>) -> String {
 mod tests {
     use super::{
         Cli, DEFAULT_MIGRATION_DIR, MigrateArgs, MigrateCommand, RootCommand, Verbosity,
-        format_postgres_target, latest_database_version, parse_postgres_target,
+        delegation_command_parts, format_postgres_target, latest_database_version,
+        parse_postgres_target,
     };
     use clap::Parser;
     use schemalane_core::{MigrationState, StatusEntry, StatusReport, StatusSummary};
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
 
     fn unwrap_migrate(cli: Cli) -> MigrateArgs {
         match cli.command {
@@ -1497,6 +1534,27 @@ mod tests {
     fn parse_init_command() {
         let cli = Cli::try_parse_from(["schemalane", "init"]).expect("CLI args should parse");
         assert!(matches!(cli.command, RootCommand::Init { .. }));
+    }
+
+    #[test]
+    fn delegation_never_puts_database_url_in_argv() {
+        let (args, envs) = delegation_command_parts(
+            Path::new("./m/Cargo.toml"),
+            Some("postgres://u:pw-classified@h/db"),
+            "public",
+            "flyway_schema_history",
+            None,
+            &MigrateCommand::Up,
+            Verbosity::Minimal,
+        );
+        assert!(
+            args.iter()
+                .all(|arg| !arg.to_string_lossy().contains("pw-classified"))
+        );
+        assert!(
+            envs.iter()
+                .any(|(key, value)| *key == "DATABASE_URL" && value.contains("pw-classified"))
+        );
     }
 
     #[test]

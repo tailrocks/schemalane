@@ -1715,17 +1715,17 @@ Rust migration registration is automatic via `embed_migrations!("./migrations")`
 Run from this crate:
 
 ```sh
-cargo run -- --database-url "$DATABASE_URL" up
+DATABASE_URL="postgres://…" cargo run -- up
 ```
 
 Run from parent project:
 
 ```sh
-cargo run --manifest-path ./migration/Cargo.toml -- --database-url "$DATABASE_URL" up
+DATABASE_URL="postgres://…" cargo run --manifest-path ./migration/Cargo.toml -- up
 ```
 "#;
 
-const INIT_GITIGNORE_TEMPLATE: &str = "/target\n";
+const INIT_GITIGNORE_TEMPLATE: &str = "/target\n.env\n";
 
 const INIT_MAIN_RS_TEMPLATE: &str = r"use __LIB_IDENT__::embedded;
 
