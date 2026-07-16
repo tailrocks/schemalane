@@ -31,4 +31,4 @@ tokio-postgres = "0.7.13"
 tempfile = "=3.27.0"
 testcontainers-modules = { version = "=0.15.0", default-features = false, features = ["postgres", "blocking", "aws-lc-rs"] }
 tokio = { version = "=1.52.3", features = ["rt-multi-thread", "time"] }
-tokio-postgres = "=0.7.17"
+tokio-postgres = "=0.7.18"
