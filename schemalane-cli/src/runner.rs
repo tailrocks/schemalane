@@ -1,7 +1,6 @@
 #![allow(clippy::print_stdout, clippy::print_stderr, clippy::future_not_send)]
 
-use clap::builder::styling::{AnsiColor, Effects, Styles};
-use clap::{Args, Parser, Subcommand, ValueEnum};
+use clap::{Parser, ValueEnum};
 use comfy_table::{Attribute, Cell, CellAlignment, Color, ContentArrangement, Table, presets};
 use deadpool_postgres::Pool;
 use owo_colors::{OwoColorize, Stream, Style};
@@ -19,24 +18,14 @@ use std::process::Command;
 use std::sync::Mutex;
 use std::time::Instant;
 
+use crate::args::{
+    Cli, CommonDbArgs, DEFAULT_MIGRATION_DIR, DEFAULT_SQL_DIR, EmbeddedCli, MigrateArgs,
+    MigrateCommand, RootCommand, StatusFormat,
+};
 use crate::connect::{create_pool, format_postgres_target};
 
 #[cfg(test)]
 use crate::connect::{parse_postgres_target, wants_tls};
-
-const DEFAULT_MIGRATION_DIR: &str = "./migration";
-const DEFAULT_SQL_DIR: &str = "./migrations";
-
-// ── Help styles ─────────────────────────────────────────────────────────────
-
-const HELP_STYLES: Styles = Styles::styled()
-    .header(AnsiColor::BrightGreen.on_default().effects(Effects::BOLD))
-    .usage(AnsiColor::BrightGreen.on_default().effects(Effects::BOLD))
-    .literal(AnsiColor::BrightCyan.on_default().effects(Effects::BOLD))
-    .placeholder(AnsiColor::Cyan.on_default())
-    .error(AnsiColor::Red.on_default().effects(Effects::BOLD))
-    .valid(AnsiColor::BrightCyan.on_default().effects(Effects::BOLD))
-    .invalid(AnsiColor::Yellow.on_default());
 
 // ── Verbosity ───────────────────────────────────────────────────────────────
 
@@ -417,124 +406,6 @@ where
 }
 
 // ── CLI argument definitions ────────────────────────────────────────────────
-
-#[derive(Debug, Parser)]
-#[command(name = "schemalane")]
-#[command(version)]
-#[command(about = "Schemalane migration toolkit")]
-#[command(styles = HELP_STYLES)]
-struct Cli {
-    #[command(subcommand)]
-    command: RootCommand,
-}
-
-#[derive(Debug, Subcommand)]
-enum RootCommand {
-    /// Initialize a new migration crate.
-    Init {
-        #[arg(long, default_value = "./migration")]
-        path: PathBuf,
-
-        #[arg(long)]
-        force: bool,
-    },
-    /// Run database migrations.
-    Migrate(MigrateArgs),
-}
-
-#[derive(Debug, Args)]
-#[command(disable_help_subcommand = true, long_about = None)]
-struct MigrateArgs {
-    /// Migration script directory.
-    #[arg(
-        short = 'd',
-        long = "migration-dir",
-        env = "MIGRATION_DIR",
-        default_value = DEFAULT_MIGRATION_DIR
-    )]
-    migration_dir: PathBuf,
-
-    #[arg(long, env = "DATABASE_URL")]
-    database_url: Option<String>,
-
-    #[command(flatten)]
-    common: CommonDbArgs,
-
-    #[command(subcommand)]
-    command: Option<MigrateCommand>,
-}
-
-#[derive(Debug, Args)]
-struct CommonDbArgs {
-    #[arg(long, default_value = "public")]
-    schema: String,
-
-    #[arg(long, default_value = "flyway_schema_history")]
-    history_table: String,
-
-    #[arg(long)]
-    installed_by: Option<String>,
-
-    /// Override the advisory lock key (default: derived from schema and history table).
-    #[arg(long)]
-    advisory_lock_id: Option<i64>,
-
-    /// Output verbosity level.
-    #[arg(long, value_enum)]
-    verbosity: Option<Verbosity>,
-}
-
-#[derive(Debug, Subcommand)]
-enum MigrateCommand {
-    /// Apply pending migrations (default).
-    Up,
-    /// Show migration status.
-    Status {
-        #[arg(long, value_enum, default_value_t = StatusFormat::Table)]
-        format: StatusFormat,
-
-        #[arg(long)]
-        fail_on_pending: bool,
-    },
-    /// Drop all schemas and re-apply migrations.
-    Fresh {
-        /// Pass "yes" to confirm destructive schema drop.
-        #[arg(long)]
-        confirm: Option<String>,
-    },
-}
-
-#[derive(Debug, Clone, Copy, ValueEnum)]
-enum StatusFormat {
-    Table,
-    Json,
-}
-
-#[derive(Debug, Parser)]
-#[command(styles = HELP_STYLES)]
-struct EmbeddedCli {
-    #[arg(long, env = "DATABASE_URL")]
-    database_url: String,
-
-    #[command(flatten)]
-    common: CommonDbArgs,
-
-    #[arg(long)]
-    dir: Option<PathBuf>,
-
-    #[command(subcommand)]
-    command: MigrateCommand,
-}
-
-impl MigrateCommand {
-    fn label(&self) -> &'static str {
-        match self {
-            Self::Up => "migrate up",
-            Self::Status { .. } => "migrate status",
-            Self::Fresh { .. } => "migrate fresh",
-        }
-    }
-}
 
 // ── CLI command dispatch ────────────────────────────────────────────────────
 
