@@ -1,8 +1,9 @@
-//! Schemalane's PostgreSQL migration engine.
+//! Schemalane's `PostgreSQL` migration engine.
 
 mod checksum;
 mod config;
 mod error;
+mod history;
 mod ident;
 mod init;
 mod migrator;
