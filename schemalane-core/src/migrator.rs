@@ -1106,16 +1106,16 @@ INSERT INTO ledger(note) VALUES ('ok');
         let cargo_toml =
             fs::read_to_string(target.join("Cargo.toml")).expect("read generated Cargo.toml");
         assert!(
-            cargo_toml.contains("schemalane-core = \"0.1\""),
-            "scaffold should depend on schemalane-core from crates.io"
+            cargo_toml.contains(
+                "schemalane-core = { git = \"https://github.com/tailrocks/schemalane.git\" }"
+            ),
+            "scaffold should depend on schemalane-core from GitHub"
         );
         assert!(
-            cargo_toml.contains("schemalane-cli = \"0.1\""),
-            "scaffold should depend on schemalane-cli from crates.io"
-        );
-        assert!(
-            !cargo_toml.contains("kellnr"),
-            "scaffold must not reference a private registry"
+            cargo_toml.contains(
+                "schemalane-cli = { git = \"https://github.com/tailrocks/schemalane.git\" }"
+            ),
+            "scaffold should depend on schemalane-cli from GitHub"
         );
         assert!(
             cargo_toml.contains("tokio-postgres = \"0.7\""),

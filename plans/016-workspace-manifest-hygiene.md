@@ -69,8 +69,8 @@ In root `Cargo.toml`:
 [workspace.package]
 edition = "2024"
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/donbeave/schemalane"
-homepage = "https://github.com/donbeave/schemalane"
+repository = "https://github.com/tailrocks/schemalane"
+homepage = "https://github.com/tailrocks/schemalane"
 rust-version = "1.85"
 
 [workspace.dependencies]

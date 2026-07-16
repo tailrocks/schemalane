@@ -33,7 +33,7 @@ This plan fixes **documented-command truth** only. (Deep spec §10/§4.2 rewrite
 Verified discrepancies, doc line → reality:
 
 1. `README.md:27` — `cargo install --path backend-rust/schemalane/schemalane-cli --force`. No `backend-rust/` exists (monorepo remnant; standalone path is `schemalane-cli`).
-2. `README.md:37` — `./docker-up-kellnr.sh`: no `.sh` file exists anywhere in the repo. `README.md:42-48` — kellnr registry setup for generated crates; after plan 008 the scaffold defaults to crates.io, making this section obsolete.
+2. Generated crates use GitHub dependencies after plan 008; README setup must describe that source workflow.
 3. `README.md:16,39,65` and `SCHEMALANE_SPEC.md` §2 (line ~35), §2.2, §2.3 — `schemalane migrate init`. Reality: `init` is a **root** subcommand (`schemalane-cli/src/lib.rs:400-408`, `RootCommand::Init`); `MigrateCommand` (lines 445–463) has only `Up`/`Status`/`Fresh`. `schemalane migrate init` fails clap parsing.
 4. `README.md:99` — `fresh --yes`; `SCHEMALANE_SPEC.md` §2.2 (line ~56) and §9 (line ~259) — `--yes (required)`. Reality: the flag is `--confirm <value>` accepting `yes` (`schemalane-cli/src/lib.rs:458-462`), plus an interactive prompt on a TTY, and the core error text is `` `fresh` requires --confirm yes `` (`schemalane-core/src/lib.rs:76`).
 5. `SCHEMALANE_SPEC.md` §8 (lines 247–255) — exit codes 0–6 only. Reality: `MixedStatements => 7` (`schemalane-core/src/lib.rs:91`) for migrations mixing transactional and non-transactional statements.
@@ -49,7 +49,7 @@ Decision baked into this plan (doc-side alignment, not code-side): keep the CLI 
 |---------|---------|---------------------|
 | CLI grammar ground truth | `cargo run -p schemalane-cli -- --help` and `cargo run -p schemalane-cli -- migrate --help` | shows `init` at root; `migrate` has `up/status/fresh`, `--verbosity` |
 | Fresh flag ground truth | `cargo run -p schemalane-cli -- migrate fresh --help` | shows `--confirm <CONFIRM>` |
-| Doc link/path sanity | `grep -n "backend-rust\|kellnr\|docker-up" README.md` | no matches after Step 1 |
+| Doc link/path sanity | inspect all referenced paths and setup commands | every reference exists and matches the GitHub-source workflow |
 
 ## Scope
 
@@ -74,12 +74,12 @@ Decision baked into this plan (doc-side alignment, not code-side): keep the CLI 
 
 1. Line 16 area (Commands list): `schemalane migrate init` → `schemalane init`. Present the four commands as: `schemalane init`, `schemalane migrate up`, `schemalane migrate status`, `schemalane migrate fresh`.
 2. Line 27: `cargo install --path backend-rust/schemalane/schemalane-cli --force` → `cargo install --path schemalane-cli --force`.
-3. Delete the kellnr block (lines ~36–48: the `./docker-up-kellnr.sh` step, the `[registries.kellnr]` instructions). If plan 008 landed, note instead: "The generated crate depends on the published schemalane crates from crates.io; for local development replace them with path dependencies (see the comments in the generated Cargo.toml)."
+3. Document: "The generated crate fetches Schemalane from GitHub; for local development replace those entries with path dependencies (see the comments in the generated Cargo.toml)."
 4. Line 39/65: `schemalane migrate init --path ./migration` → `schemalane init --path ./migration` (both occurrences).
 5. Line 99: `fresh --yes` → `fresh --confirm yes`.
 6. If plan 007 landed: convert `--database-url "$DATABASE_URL"` examples to `DATABASE_URL=… schemalane migrate …` / `DATABASE_URL=… cargo run … -- up` forms; if 007 has not landed, leave the examples but they still must use the correct subcommand spelling.
 
-**Verify**: `grep -n "backend-rust\|kellnr\|docker-up\|migrate init\|--yes" README.md` → no matches.
+**Verify**: check that obsolete paths, `migrate init`, and `--yes` are absent from README.md.
 
 ### Step 2: Spec fixes
 

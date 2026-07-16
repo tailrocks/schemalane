@@ -140,12 +140,13 @@ edition = "2024"
 publish = false
 
 [dependencies]
-schemalane-core = "0.1"
-schemalane-cli = "0.1"
+schemalane-core = { git = "https://github.com/tailrocks/schemalane.git" }
+schemalane-cli = { git = "https://github.com/tailrocks/schemalane.git" }
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 tokio-postgres = "0.7"
 
-# Developing against a local schemalane checkout? Use path dependencies:
+# Developing against a local Schemalane checkout? Replace the Git dependencies
+# above with path dependencies:
 # schemalane-core = { path = "../schemalane-core" }
 # schemalane-cli = { path = "../schemalane-cli" }
 "#;

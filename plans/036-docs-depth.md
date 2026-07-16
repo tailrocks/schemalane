@@ -22,7 +22,7 @@ Three documentation debts beyond plan 009's command fixes:
 
 1. **Spec §10 + §4.2 describe an abandoned SeaORM design**: §10 promises `Migrator::up(&DatabaseConnection, &Config)`; §4.2's code sample uses `manager.get_connection()` / `txn.execute_unprepared()` (SeaORM APIs). The real surface is `SchemalaneMigrator::new(config)` + `up/status/fresh(&deadpool_postgres::Pool)`. The strongest intent doc actively misleads integrators.
 2. **docs.rs is bare**: `schemalane-core` has no crate-level `//!` docs and its public types/functions carry no `///` (the doc comments that exist sit on private helpers); `schemalane-macros`' `embed_migrations!` was undocumented pre-plan-012. Published 0.1.x crates render as bare signatures.
-3. **pg_query_fmt's crates.io page is the wrong README**: `readme = "../README.md"` — a SQL-formatter crate fronted by the migration tool's README, kellnr instructions and all.
+3. **pg_query_fmt's crates.io page is the wrong README**: `readme = "../README.md"` — a SQL-formatter crate fronted by the migration tool's unrelated README.
 
 ## Current state
 

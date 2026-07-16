@@ -51,8 +51,8 @@ Validate the full flow:
 # scaffold migration crate
 schemalane init --path ./migration
 
-# The generated Cargo.toml targets crates.io. Until schemalane-cli is
-# published there, use the commented local path dependencies in that file.
+# The generated Cargo.toml fetches Schemalane directly from GitHub.
+# For local development, use its commented path-dependency alternatives.
 
 # run migration binary directly
 DATABASE_URL="$DATABASE_URL" cargo run --manifest-path ./migration/Cargo.toml -- up
