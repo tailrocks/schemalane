@@ -1,12 +1,11 @@
 use crc32fast::Hasher;
 use deadpool_postgres::Pool;
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::time::Instant;
 use tokio_postgres::Client;
 
-use crate::discovery::{DiscoveredMigration, MigrationSource, MigrationType};
-use crate::filename::{ParsedVersion, parse_rust_filename, parse_sql_filename};
+use crate::discovery::{DiscoveredMigration, MigrationSource};
 
 const ADVISORY_LOCK_NAMESPACE: i64 = 7_333_654_209_921_337;
 
@@ -20,7 +19,6 @@ pub fn derive_advisory_lock_id(schema: &str, history_table: &str) -> i64 {
     (ADVISORY_LOCK_NAMESPACE & !0xFFFF_FFFFi64) | low
 }
 
-use crate::checksum::calculate_checksum;
 use crate::execute::{Applied, execute_rust_migration, execute_sql_migration, millis_i32};
 use crate::history::latest_history_by_script;
 use crate::history::{HistoryRepository, HistoryRow, HistoryWrite};
@@ -37,6 +35,15 @@ use crate::{
 use crate::MigrationState;
 
 #[cfg(test)]
+use crate::checksum::calculate_checksum;
+
+#[cfg(test)]
+use crate::discovery::MigrationType;
+
+#[cfg(test)]
+use crate::filename::parse_sql_filename;
+
+#[cfg(test)]
 use crate::init_migration_project;
 
 fn normalize_script_key(script: String) -> String {
@@ -50,8 +57,8 @@ fn normalize_script_key(script: String) -> String {
 use crate::RustMigrationExecutor;
 
 pub struct SchemalaneMigrator {
-    config: SchemalaneConfig,
-    rust_migrations: HashMap<String, RustMigrationExecutor>,
+    pub(crate) config: SchemalaneConfig,
+    pub(crate) rust_migrations: HashMap<String, RustMigrationExecutor>,
 }
 
 impl SchemalaneMigrator {
@@ -344,118 +351,6 @@ impl SchemalaneMigrator {
             .execute("SELECT pg_advisory_unlock($1)", &[&lock_id])
             .await;
         result
-    }
-
-    fn discover_migrations(&self) -> Result<Vec<DiscoveredMigration>, SchemalaneError> {
-        if !self.config.migrations_dir.exists() {
-            return Err(SchemalaneError::Validation(format!(
-                "migrations directory not found: {}",
-                self.config.migrations_dir.display()
-            )));
-        }
-
-        let mut migrations = Vec::new();
-        for entry in std::fs::read_dir(&self.config.migrations_dir)? {
-            let entry = entry?;
-            let path = entry.path();
-            if !path.is_file() {
-                continue;
-            }
-
-            let Some(extension) = path.extension().and_then(|ext| ext.to_str()) else {
-                continue;
-            };
-            let file_name = path.file_name().and_then(|n| n.to_str()).ok_or_else(|| {
-                SchemalaneError::Validation("non-utf8 migration filename".to_owned())
-            })?;
-
-            let migration = if extension.eq_ignore_ascii_case("sql") {
-                let (version_text, version, description) = parse_sql_filename(file_name)?;
-                let bytes = std::fs::read(&path)?;
-                let checksum = Some(calculate_checksum(file_name, &bytes)?);
-                let content = String::from_utf8(bytes).map_err(|err| {
-                    SchemalaneError::Validation(format!(
-                        "SQL migration {} is not valid UTF-8: {err}",
-                        path.display()
-                    ))
-                })?;
-                DiscoveredMigration {
-                    version,
-                    version_text,
-                    description_display: description.replace('_', " "),
-                    script: file_name.to_owned(),
-                    checksum,
-                    migration_type: MigrationType::Sql,
-                    source: MigrationSource::SqlFile { path, content },
-                }
-            } else if extension.eq_ignore_ascii_case("rs") {
-                let (version_text, version, description) = parse_rust_filename(file_name)?;
-                let content = std::fs::read(&path)?;
-                DiscoveredMigration {
-                    version,
-                    version_text,
-                    description_display: description.replace('_', " "),
-                    script: file_name.to_owned(),
-                    checksum: Some(calculate_checksum(file_name, &content)?),
-                    migration_type: MigrationType::Rust,
-                    source: MigrationSource::RustFile(path),
-                }
-            } else {
-                continue;
-            };
-            migrations.push(migration);
-        }
-
-        let mut versions: std::collections::BTreeMap<&ParsedVersion, &str> =
-            std::collections::BTreeMap::new();
-        let mut scripts = BTreeSet::new();
-
-        for migration in &migrations {
-            if let Some(existing) = versions.insert(&migration.version, migration.script.as_str()) {
-                return Err(SchemalaneError::Validation(format!(
-                    "duplicate migration version '{}': '{}' and '{}' resolve to the same version",
-                    migration.version_text, existing, migration.script
-                )));
-            }
-            if !scripts.insert(migration.script.clone()) {
-                return Err(SchemalaneError::Validation(format!(
-                    "duplicate migration script '{}'",
-                    migration.script
-                )));
-            }
-        }
-
-        migrations.sort_by(|a, b| {
-            a.version
-                .cmp(&b.version)
-                .then_with(|| a.script.cmp(&b.script))
-        });
-        Ok(migrations)
-    }
-
-    fn ensure_rust_executors_registered(
-        &self,
-        migrations: &[DiscoveredMigration],
-    ) -> Result<(), SchemalaneError> {
-        let mut missing_scripts = Vec::new();
-
-        for migration in migrations {
-            if migration.migration_type == MigrationType::Rust
-                && !self.rust_migrations.contains_key(migration.script.as_str())
-            {
-                missing_scripts.push(migration.script.clone());
-            }
-        }
-
-        if missing_scripts.is_empty() {
-            Ok(())
-        } else {
-            missing_scripts.sort();
-            Err(SchemalaneError::Validation(format!(
-                "missing Rust migration executor(s) for script(s): {}",
-                missing_scripts.join(", ")
-            )))
-        }
     }
 
     fn ensure_no_blocking_history(
