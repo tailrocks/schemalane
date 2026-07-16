@@ -3,9 +3,8 @@
 use clap::builder::styling::{AnsiColor, Effects, Styles};
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use comfy_table::{Attribute, Cell, CellAlignment, Color, ContentArrangement, Table, presets};
-use deadpool_postgres::{ManagerConfig, Pool, RecyclingMethod};
+use deadpool_postgres::Pool;
 use owo_colors::{OwoColorize, Stream, Style};
-use rustls_platform_verifier::ConfigVerifierExt;
 use schemalane_core::{
     MigrationFailed, MigrationFinished, MigrationObserver, MigrationStarted, MigrationState,
     SchemalaneConfig, SchemalaneError, SchemalaneMigrator, SqlStatementFailed,
@@ -19,7 +18,11 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Mutex;
 use std::time::Instant;
-use tokio_postgres::NoTls;
+
+use crate::connect::{create_pool, format_postgres_target};
+
+#[cfg(test)]
+use crate::connect::{parse_postgres_target, wants_tls};
 
 const DEFAULT_MIGRATION_DIR: &str = "./migration";
 const DEFAULT_SQL_DIR: &str = "./migrations";
@@ -87,15 +90,6 @@ fn truncate_preview(s: &str, max_width: usize) -> String {
 }
 
 use crate::prompt::prompt_yes_no;
-
-// ── Postgres URL parsing ────────────────────────────────────────────────────
-
-struct PostgresTarget {
-    user: Option<String>,
-    host: String,
-    port: Option<u16>,
-    database: String,
-}
 
 // ── Progress observer ───────────────────────────────────────────────────────
 
@@ -743,34 +737,6 @@ fn delegation_command_parts(
 
 // ── Database connection ─────────────────────────────────────────────────────
 
-fn create_pool(database_url: &str) -> Result<Pool, SchemalaneError> {
-    let pg_config: tokio_postgres::Config = database_url
-        .parse()
-        .map_err(|err| SchemalaneError::Config(format!("failed to parse database URL: {err}")))?;
-
-    let manager_config = ManagerConfig {
-        recycling_method: RecyclingMethod::Fast,
-    };
-    let mgr = if wants_tls(&pg_config) {
-        let tls_config = rustls::ClientConfig::with_platform_verifier().map_err(|err| {
-            SchemalaneError::Config(format!("failed to configure TLS verifier: {err}"))
-        })?;
-        let tls = tokio_postgres_rustls::MakeRustlsConnect::new(tls_config);
-        deadpool_postgres::Manager::from_config(pg_config, tls, manager_config)
-    } else {
-        deadpool_postgres::Manager::from_config(pg_config, NoTls, manager_config)
-    };
-
-    Pool::builder(mgr)
-        .max_size(5)
-        .build()
-        .map_err(|err| SchemalaneError::Config(format!("failed to build connection pool: {err}")))
-}
-
-fn wants_tls(config: &tokio_postgres::Config) -> bool {
-    config.get_ssl_mode() != tokio_postgres::config::SslMode::Disable
-}
-
 async fn connect_with_feedback(
     database_url: &str,
     command_label: &str,
@@ -814,76 +780,6 @@ async fn connect_with_feedback(
             Err(SchemalaneError::Pool(err))
         }
     }
-}
-
-fn format_postgres_target(database_url: &str) -> String {
-    match parse_postgres_target(database_url) {
-        Some(target) => {
-            let user = target
-                .user
-                .as_deref()
-                .map_or_else(String::new, |value| format!("{value}@"));
-            let port = target
-                .port
-                .map_or_else(String::new, |value| format!(":{value}"));
-            format!("{user}{}{port}/{}", target.host, target.database)
-        }
-        None => "<unparsed-url>".to_owned(),
-    }
-}
-
-fn parse_postgres_target(database_url: &str) -> Option<PostgresTarget> {
-    let without_scheme = database_url
-        .strip_prefix("postgres://")
-        .or_else(|| database_url.strip_prefix("postgresql://"))?;
-
-    let (authority, path) = without_scheme.split_once('/')?;
-    let database = path.split(['?', '#']).next()?.to_owned();
-    if database.is_empty() {
-        return None;
-    }
-
-    let (userinfo, hostport) = if let Some((user, host)) = authority.rsplit_once('@') {
-        (Some(user), host)
-    } else {
-        (None, authority)
-    };
-
-    let user = userinfo
-        .and_then(|raw| raw.split(':').next())
-        .filter(|value| !value.is_empty())
-        .map(ToOwned::to_owned);
-
-    let (host, port) = parse_host_port(hostport)?;
-
-    Some(PostgresTarget {
-        user,
-        host,
-        port,
-        database,
-    })
-}
-
-fn parse_host_port(value: &str) -> Option<(String, Option<u16>)> {
-    if let Some(stripped) = value.strip_prefix('[') {
-        let (host, rest) = stripped.split_once(']')?;
-        if rest.is_empty() {
-            return Some((host.to_owned(), None));
-        }
-        let port = rest
-            .strip_prefix(':')
-            .and_then(|candidate| candidate.parse::<u16>().ok());
-        return Some((host.to_owned(), port));
-    }
-
-    if let Some((host, port_text)) = value.rsplit_once(':')
-        && !host.is_empty()
-        && port_text.chars().all(|ch| ch.is_ascii_digit())
-    {
-        return Some((host.to_owned(), port_text.parse::<u16>().ok()));
-    }
-
-    Some((value.to_owned(), None))
 }
 
 // ── DB commands ─────────────────────────────────────────────────────────────
