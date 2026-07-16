@@ -174,6 +174,31 @@ mod tests {
     }
 
     #[test]
+    fn rejects_sql_filename_missing_version() {
+        let err = parse_sql_filename("V__x.sql").expect_err("missing version");
+        assert!(err.to_string().contains("missing version"));
+    }
+
+    #[test]
+    fn rejects_sql_filename_with_non_numeric_version() {
+        let err = parse_sql_filename("Vabc__x.sql").expect_err("invalid version");
+        assert!(err.to_string().contains("invalid version"));
+    }
+
+    #[test]
+    fn rejects_sql_filename_with_empty_version_part() {
+        let err = parse_sql_filename("V1..2__x.sql").expect_err("invalid version");
+        assert!(err.to_string().contains("invalid version"));
+    }
+
+    #[test]
+    fn trailing_zero_version_parts_compare_equal() {
+        let (_, left, _) = parse_sql_filename("V1.2.3.0__x.sql").expect("left");
+        let (_, right, _) = parse_sql_filename("V1.2.3__y.sql").expect("right");
+        assert_eq!(left, right);
+    }
+
+    #[test]
     fn rejects_invalid_sql_filename() {
         let err = parse_sql_filename("2026_02_24_price_histories.sql")
             .expect_err("invalid filename should fail");

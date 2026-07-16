@@ -1995,6 +1995,26 @@ mod tests {
     }
 
     #[test]
+    fn exit_codes_match_spec_section_8() {
+        use SchemalaneError as E;
+        assert_eq!(E::Validation("x".into()).exit_code(), 2);
+        assert_eq!(E::Drift("x".into()).exit_code(), 3);
+        assert_eq!(E::FailedHistory("x".into()).exit_code(), 4);
+        assert_eq!(E::PendingMigrations(3).exit_code(), 5);
+        assert_eq!(E::FreshRequiresConfirm.exit_code(), 6);
+        assert_eq!(
+            E::MixedStatements {
+                script: "s".into(),
+                line: 1,
+            }
+            .exit_code(),
+            7
+        );
+        assert_eq!(E::Io(std::io::Error::other("x")).exit_code(), 1);
+        // Database-backed variants wrap non-constructible driver errors and share fallback 1.
+    }
+
+    #[test]
     fn advisory_lock_key_is_stable_and_target_scoped() {
         let a = derive_advisory_lock_id("public", "flyway_schema_history");
         assert_eq!(
@@ -2327,6 +2347,13 @@ mod tests {
         let (_temp, migrator) =
             migrator_with_files(&[("V1__a.sql", "SELECT 1;"), ("V1.1__b.sql", "SELECT 2;")]);
         assert_eq!(migrator.discover_migrations().expect("distinct").len(), 2);
+    }
+
+    #[test]
+    fn discovery_formats_description_for_display() {
+        let (_temp, migrator) = migrator_with_files(&[("V1__add_user_table.sql", "SELECT 1;")]);
+        let migrations = migrator.discover_migrations().expect("discover");
+        assert_eq!(migrations[0].description_display, "add user table");
     }
 
     #[test]

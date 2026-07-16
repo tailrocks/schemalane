@@ -1531,9 +1531,9 @@ fn database_version_label(version: Option<&str>) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        Cli, DEFAULT_MIGRATION_DIR, MigrateArgs, MigrateCommand, RootCommand, Verbosity,
-        delegation_command_parts, format_postgres_target, latest_database_version,
-        parse_postgres_target,
+        Cli, DEFAULT_MIGRATION_DIR, DelegationOptions, MigrateArgs, MigrateCommand, RootCommand,
+        StatusFormat, Verbosity, delegation_command_parts, format_postgres_target,
+        latest_database_version, parse_postgres_target,
     };
     use clap::Parser;
     use schemalane_core::{MigrationState, StatusEntry, StatusReport, StatusSummary};
@@ -1574,6 +1574,178 @@ mod tests {
         );
     }
 
+    fn delegated_args(command: &MigrateCommand) -> (Vec<String>, Vec<(&'static str, String)>) {
+        let options = DelegationOptions {
+            database_url: Some("postgres://u:secret@h/db"),
+            schema: "tenant",
+            history_table: "history",
+            installed_by: Some("tester"),
+            advisory_lock_id: Some(42),
+            command,
+            verbosity: Verbosity::Minimal,
+        };
+        let (args, envs) = delegation_command_parts(Path::new("./m/Cargo.toml"), &options);
+        (
+            args.into_iter()
+                .map(|arg| arg.to_string_lossy().into_owned())
+                .collect(),
+            envs,
+        )
+    }
+
+    #[test]
+    fn delegation_up_forwards_all_options_in_order() {
+        let (args, envs) = delegated_args(&MigrateCommand::Up);
+        assert_eq!(
+            args,
+            [
+                "run",
+                "--manifest-path",
+                "./m/Cargo.toml",
+                "--",
+                "--schema",
+                "tenant",
+                "--history-table",
+                "history",
+                "--installed-by",
+                "tester",
+                "--advisory-lock-id",
+                "42",
+                "--verbosity",
+                "minimal",
+                "up",
+            ]
+        );
+        assert_eq!(
+            envs,
+            [("DATABASE_URL", "postgres://u:secret@h/db".to_owned())]
+        );
+        assert!(!args.iter().any(|arg| arg.contains("postgres://")));
+    }
+
+    #[test]
+    fn delegation_status_forwards_json_and_pending_gate() {
+        let command = MigrateCommand::Status {
+            format: StatusFormat::Json,
+            fail_on_pending: true,
+        };
+        let (args, _) = delegated_args(&command);
+        assert!(args.ends_with(&[
+            "status".to_owned(),
+            "--format".to_owned(),
+            "json".to_owned(),
+            "--fail-on-pending".to_owned(),
+        ]));
+    }
+
+    #[test]
+    fn delegation_fresh_forwards_confirmation() {
+        let command = MigrateCommand::Fresh {
+            confirm: Some("yes".to_owned()),
+        };
+        let (args, _) = delegated_args(&command);
+        assert!(args.ends_with(&["fresh".to_owned(), "--confirm".to_owned(), "yes".to_owned()]));
+    }
+
+    #[test]
+    fn status_json_shape_is_stable() {
+        let report = StatusReport {
+            schema: "public".into(),
+            history_table: "flyway_schema_history".into(),
+            migrations: vec![StatusEntry {
+                version: Some("1".into()),
+                description: "init".into(),
+                migration_type: "SQL".into(),
+                script: "V1__init.sql".into(),
+                checksum: Some(-559_038_737),
+                installed_rank: Some(1),
+                installed_on: Some("2026-01-01 00:00:00".into()),
+                execution_time_ms: Some(12),
+                state: MigrationState::Success,
+            }],
+            summary: StatusSummary {
+                success: 1,
+                ..Default::default()
+            },
+        };
+        let value = serde_json::to_value(&report).expect("serialize");
+        let entry = &value["migrations"][0];
+        assert_eq!(entry["type"], "SQL");
+        assert_eq!(entry["state"], "Success");
+        assert_eq!(entry["checksum"], -559_038_737);
+        assert_eq!(value["summary"]["checksum_mismatch"], 0);
+        let keys: Vec<&str> = entry
+            .as_object()
+            .expect("object")
+            .keys()
+            .map(String::as_str)
+            .collect();
+        assert_eq!(
+            keys,
+            [
+                "checksum",
+                "description",
+                "execution_time_ms",
+                "installed_on",
+                "installed_rank",
+                "script",
+                "state",
+                "type",
+                "version"
+            ]
+        );
+    }
+
+    #[test]
+    fn migration_state_json_spellings_are_stable() {
+        for (state, expected) in [
+            (MigrationState::Success, "\"Success\""),
+            (MigrationState::Pending, "\"Pending\""),
+            (MigrationState::Failed, "\"Failed\""),
+            (MigrationState::Missing, "\"Missing\""),
+            (MigrationState::ChecksumMismatch, "\"ChecksumMismatch\""),
+        ] {
+            assert_eq!(serde_json::to_string(&state).expect("serialize"), expected);
+        }
+    }
+
+    #[test]
+    fn database_url_flag_beats_env() {
+        temp_env::with_var("DATABASE_URL", Some("postgres://env@h/db"), || {
+            let args = unwrap_migrate(
+                Cli::try_parse_from([
+                    "schemalane",
+                    "migrate",
+                    "--database-url",
+                    "postgres://flag@h/db",
+                    "up",
+                ])
+                .expect("parse"),
+            );
+            assert_eq!(args.database_url.as_deref(), Some("postgres://flag@h/db"));
+        });
+    }
+
+    #[test]
+    fn database_url_env_used_when_flag_absent() {
+        temp_env::with_var("DATABASE_URL", Some("postgres://env@h/db"), || {
+            let args = unwrap_migrate(
+                Cli::try_parse_from(["schemalane", "migrate", "up"]).expect("parse"),
+            );
+            assert_eq!(args.database_url.as_deref(), Some("postgres://env@h/db"));
+        });
+    }
+
+    #[test]
+    fn migration_dir_env_beats_default() {
+        temp_env::with_var("MIGRATION_DIR", Some("/tmp/envdir"), || {
+            let args = unwrap_migrate(
+                Cli::try_parse_from(["schemalane", "migrate", "up"]).expect("parse"),
+            );
+            assert_eq!(args.migration_dir, PathBuf::from("/tmp/envdir"));
+        });
+    }
+
     #[test]
     fn truncate_preview_is_char_boundary_safe() {
         let short = "é".repeat(30);
@@ -1610,19 +1782,24 @@ mod tests {
 
     #[test]
     fn parse_default_migration_dir() {
-        let cli = Cli::try_parse_from(["schemalane", "migrate", "status"])
-            .expect("CLI args should parse");
-        let args = unwrap_migrate(cli);
-        assert_eq!(args.migration_dir, PathBuf::from(DEFAULT_MIGRATION_DIR));
-        assert!(matches!(args.command, Some(MigrateCommand::Status { .. })));
+        temp_env::with_var("MIGRATION_DIR", None::<&str>, || {
+            let cli = Cli::try_parse_from(["schemalane", "migrate", "status"])
+                .expect("CLI args should parse");
+            let args = unwrap_migrate(cli);
+            assert_eq!(args.migration_dir, PathBuf::from(DEFAULT_MIGRATION_DIR));
+            assert!(matches!(args.command, Some(MigrateCommand::Status { .. })));
+        });
     }
 
     #[test]
     fn parse_migrate_without_subcommand() {
-        let cli = Cli::try_parse_from(["schemalane", "migrate"]).expect("CLI args should parse");
-        let args = unwrap_migrate(cli);
-        assert_eq!(args.migration_dir, PathBuf::from(DEFAULT_MIGRATION_DIR));
-        assert!(args.command.is_none(), "no subcommand means implicit up");
+        temp_env::with_var("MIGRATION_DIR", None::<&str>, || {
+            let cli =
+                Cli::try_parse_from(["schemalane", "migrate"]).expect("CLI args should parse");
+            let args = unwrap_migrate(cli);
+            assert_eq!(args.migration_dir, PathBuf::from(DEFAULT_MIGRATION_DIR));
+            assert!(args.command.is_none(), "no subcommand means implicit up");
+        });
     }
 
     #[test]

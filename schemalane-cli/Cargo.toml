@@ -31,3 +31,6 @@ tokio-postgres = { workspace = true }
 tokio-postgres-rustls = "0.14.0"
 rustls = "0.23.42"
 rustls-platform-verifier = "0.7.0"
+
+[dev-dependencies]
+temp-env = "0.3.6"
