@@ -18,7 +18,7 @@ Wave A — critical fixes (mostly independent; 001 first):
 |------|-------|----------|--------|------------|--------|
 | 001 | CI runs the DB integration tests | P1 | M | — | DONE |
 | 002 | `fresh` drops only the target schema | P1 | M | 001 | DONE |
-| 003 | Delegated exit codes propagate verbatim | P1 | S-M | — | TODO |
+| 003 | Delegated exit codes propagate verbatim | P1 | S-M | — | DONE |
 | 004 | stdout machine-clean: JSON/stderr/ANSI/control chars | P1 | M | — | TODO |
 | 005 | Semantic duplicate-version detection | P1 | S | — | TODO |
 | 006 | Quote identifiers in `to_regclass` probe | P1 | S | 001 | TODO |

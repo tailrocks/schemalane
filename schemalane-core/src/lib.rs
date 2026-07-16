@@ -78,6 +78,9 @@ pub enum SchemalaneError {
 
     #[error("Pending migrations found ({0})")]
     PendingMigrations(usize),
+
+    #[error("migration crate command exited with code {code}")]
+    Delegated { code: i32 },
 }
 
 impl SchemalaneError {
@@ -89,6 +92,7 @@ impl SchemalaneError {
             Self::PendingMigrations(_) => 5,
             Self::FreshRequiresConfirm => 6,
             Self::MixedStatements { .. } => 7,
+            Self::Delegated { code } => *code,
             _ => 1,
         }
     }
@@ -1898,6 +1902,13 @@ mod tests {
     };
     use std::fs;
     use tempfile::TempDir;
+
+    #[test]
+    fn delegated_error_exit_code_is_forwarded_verbatim() {
+        for code in [1, 2, 3, 4, 5, 6, 7, 42] {
+            assert_eq!(SchemalaneError::Delegated { code }.exit_code(), code);
+        }
+    }
 
     #[test]
     fn parse_sql_migration_handles_quotes_comments_and_dollar_blocks() {

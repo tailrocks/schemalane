@@ -701,19 +701,23 @@ fn run_via_migration_crate(
     }
 
     let status = cargo.status().map_err(|err| {
-        SchemalaneError::Validation(format!(
-            "failed to run cargo for migration crate {}: {err}",
-            manifest_path.display()
+        SchemalaneError::Io(std::io::Error::new(
+            err.kind(),
+            format!(
+                "failed to run cargo for migration crate {}: {err}",
+                manifest_path.display()
+            ),
         ))
     })?;
 
     if status.success() {
         Ok(())
     } else {
-        Err(SchemalaneError::Validation(format!(
-            "migration crate command failed for {} with status {status} (see output above)",
-            manifest_path.display()
-        )))
+        // The child emitted its error with a contract-compliant exit code.
+        // Signal termination has no code and is a runtime failure.
+        Err(SchemalaneError::Delegated {
+            code: status.code().unwrap_or(1),
+        })
     }
 }
 
