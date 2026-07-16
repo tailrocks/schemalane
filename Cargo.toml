@@ -12,6 +12,25 @@ default-members = [
 ]
 resolver = "3"
 
+[workspace.package]
+edition = "2024"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/donbeave/schemalane"
+homepage = "https://github.com/donbeave/schemalane"
+rust-version = "1.85"
+
+[workspace.dependencies]
+deadpool-postgres = "0.14.1"
+owo-colors = "4.3.0"
+pg_query = "6.1.1"
+tokio = "1.52"
+tokio-postgres = "0.7.18"
+
+schemalane-core = { version = "0.1.20", path = "schemalane-core" }
+schemalane-cli = { version = "0.1.26", path = "schemalane-cli" }
+schemalane-macros = { version = "0.1.0", path = "schemalane-macros" }
+pg_query_fmt = { version = "0.1.3", path = "pg_query_fmt" }
+
 [workspace.lints.rust]
 unsafe_code = "forbid"
 

@@ -36,7 +36,7 @@ Wave B — hardening & structure prerequisites:
 |------|-------|----------|--------|------------|--------|
 | 014 | Advisory-lock key scoped to (schema, table) + flag | P2 | S | — | DONE |
 | 015 | Release pipeline: idempotent publish, SHA pins, cargo-audit | P2 | M | — | BLOCKED — dependent package verification needs first crates.io release |
-| 016 | Workspace manifest hygiene (shared deps, MSRV, pins) | P2 | S-M | — | TODO |
+| 016 | Workspace manifest hygiene (shared deps, MSRV, pins) | P2 | S-M | — | DONE |
 | 017 | CLAUDE.md contributor/agent guide | P2 | S | — | TODO |
 | 018 | up-path perf: history map, rank counter, single-pass IO | P2 | S | 001 | TODO |
 | 019 | State-model unit tests + SQL-failure/lock integration tests | P1 | M | 001 | TODO |
