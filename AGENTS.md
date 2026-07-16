@@ -8,8 +8,8 @@
   command, migration, checksum, history, and exit-code behavior.
 - `Cargo.toml` owns workspace membership and shared dependency requirements.
   `.github/workflows/` owns the executable CI and release gates.
-- `CLAUDE.md` files are import adapters for Claude Code. Keep shared rules in
-  `AGENTS.md`; do not maintain a second copy in `CLAUDE.md`.
+- `CLAUDE.md` files are relative symlinks to sibling `AGENTS.md` files. Keep
+  shared rules in `AGENTS.md`; do not maintain a second copy in `CLAUDE.md`.
 - A session launched at the repository root may not preload descendant guides.
   Read the mapped local guide before changing that subtree.
 
@@ -53,7 +53,7 @@ cargo audit
 - The ordinary workspace test command reports the Docker tests as ignored. Do
   not claim database behavior is verified unless the `--include-ignored` suite
   passed.
-- The instruction check validates cross-tool import adapters and the 200-line
+- The instruction check validates cross-tool symlinks and the 200-line
   maintenance budget before other gates run.
 - `cargo package --workspace` is intentional: Cargo stages workspace archives
   in dependency order, allowing unpublished sibling crates to verify together.

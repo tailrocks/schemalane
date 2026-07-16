@@ -5,18 +5,18 @@ Research date: 2026-07-16
 ## Decision summary
 
 Use a root `AGENTS.md` as the hand-maintained, tool-neutral source of durable
-repository guidance. Keep a short root `CLAUDE.md` that imports it with
-`@AGENTS.md` and contains only Claude Code-specific additions. Add nested files
-only when a subtree truly has different commands or constraints. Do not use
-instruction prose as a security control.
+repository guidance. Make `CLAUDE.md` a relative symlink to `AGENTS.md`, so both
+tools read one physical file. Add nested pairs only when a subtree truly has
+different commands or constraints. Do not use instruction prose as a security
+control. This repository accepts the reduced Windows portability of symlinks.
 
-This shape follows the vendor-neutral AGENTS.md convention and Anthropic's
-explicit recommendation for repositories that support both formats. The
-AGENTS.md project describes the file as plain Markdown for project context,
-build and test commands, conventions, and security considerations; it supports
-nested files whose closest guidance wins. The format is now stewarded by the
-Agentic AI Foundation under the Linux Foundation, not by Google or another
-single vendor. [AGENTS.md format][agents-format]
+This shape follows the vendor-neutral AGENTS.md convention and a Claude Code
+compatibility mechanism documented by Anthropic. The AGENTS.md project describes
+the file as plain Markdown for project context, build and test commands,
+conventions, and security considerations; it supports nested files whose closest
+guidance wins. The format is now stewarded by the Agentic AI Foundation under
+the Linux Foundation, not by Google or another single vendor.
+[AGENTS.md format][agents-format]
 [OpenAI AAIF announcement][aaif]
 
 ## What the official implementations actually load
@@ -44,8 +44,9 @@ single vendor. [AGENTS.md format][agents-format]
 
 Anthropic explicitly says Claude Code reads `CLAUDE.md`, not `AGENTS.md`, and
 recommends a `CLAUDE.md` containing `@AGENTS.md` plus any Claude-only section.
-A symlink also works, but the import is portable to Windows without elevated
-symlink support. [Claude Code memory and instruction docs][claude-memory]
+A symlink also works and guarantees one physical source; imports are more
+portable to Windows installations without symlink support. This repository uses
+the symlink option. [Claude Code memory and instruction docs][claude-memory]
 
 ### OpenAI Codex
 
@@ -86,12 +87,12 @@ later load descendant instructions as files are read. Therefore:
 - Create root `AGENTS.md` for the specification pointer, crate map, prerequisites,
   universal Rust/SQL/output conventions, exact verification commands, and
   commit/review expectations.
-- Replace duplicated root `CLAUDE.md` content with `@AGENTS.md`, followed only by
-  genuine Claude Code behavior such as which `.claude/rules` or skills to use.
-- Keep the root guidance comfortably below both vendor limits. Current
-  `CLAUDE.md` is already short; the objective is deduplication, not expansion.
+- Replace duplicated root `CLAUDE.md` content with a relative symlink to
+  `AGENTS.md`. Put genuine Claude-only behavior in `.claude/rules` or skills.
+- Keep the linked root guidance comfortably below both vendor limits. The
+  objective is deduplication, not expansion.
 - Add nested `AGENTS.md` only if a crate develops materially different commands
-  or invariants. Mirror it with a nested `CLAUDE.md` import only if Claude must
+  or invariants. Mirror it with a nested `CLAUDE.md` symlink only if Claude must
   discover the same subtree rules; test discovery in both tools.
 - Prefer `.claude/rules` with `paths` for Claude-only file-pattern rules. Do not
   copy those rules into every package.
@@ -122,14 +123,14 @@ commands whenever CI or workspace membership changes.
 ### Duplication and maintenance
 
 - One canonical statement per rule. For shared behavior, canonicalize in
-  `AGENTS.md` and import it from `CLAUDE.md`.
+  `AGENTS.md` and expose it through the `CLAUDE.md` symlink.
 - Hand-maintain committed instructions through normal review. Generator commands
   such as Claude Code `/init` are useful for bootstrapping or suggesting
   improvements, but Anthropic says to refine generated output with facts the tool
   cannot discover. Generated output must not overwrite reviewed policy.
 - Update instructions when the same correction or review feedback recurs, not
   for one-off task state. Periodically delete stale rules and resolve conflicts.
-- Add a lightweight CI check for broken local links/import targets and referenced
+- Add a lightweight CI check for broken symlink targets and referenced
   command drift if these files become operationally critical.
 
 [Claude Code memory and instruction docs][claude-memory]
@@ -147,8 +148,8 @@ in the agent/tool permission layer. [Claude Code configuration debugging][claude
 - Never store secrets, tokens, private URLs, personal data, or machine-specific
   credentials in committed instruction files.
 - Keep personal preferences and local endpoints in ignored local/user scope.
-- Treat imported or nested instructions as executable influence: review changes
-  to them like build scripts, keep imports inside the repository when possible,
+- Treat linked or nested instructions as executable influence: review changes
+  to them like build scripts, keep links inside the repository when possible,
   and require ownership review for security policy changes.
 - Instructions may say to ask before destructive actions, but permissions,
   sandboxing, hooks, branch protection, and CI must provide the guarantee.
@@ -179,7 +180,7 @@ above adopts the stricter behavior that is reliable across both tools.
 ## Verification checklist for a future migration
 
 - `AGENTS.md` is the only canonical copy of shared repository facts.
-- Root `CLAUDE.md` imports `@AGENTS.md`; its remaining text is Claude-specific.
+- Every `CLAUDE.md` is a relative symlink to its sibling `AGENTS.md`.
 - Both files are concise, contain no secrets, and point to existing paths.
 - Commands match CI and clearly distinguish Docker-dependent tests.
 - No root/nested or AGENTS/CLAUDE contradictions remain.

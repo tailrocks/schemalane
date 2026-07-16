@@ -10,11 +10,6 @@ for required_file in ./AGENTS.md ./CLAUDE.md; do
   fi
 done
 
-if [[ -f ./CLAUDE.md ]] && [[ $(head -n 1 ./CLAUDE.md) != "@AGENTS.md" ]]; then
-  echo "./CLAUDE.md must start with @AGENTS.md" >&2
-  status=1
-fi
-
 while IFS= read -r -d '' agents_file; do
   directory=$(dirname "$agents_file")
   claude_file="$directory/CLAUDE.md"
@@ -25,11 +20,14 @@ while IFS= read -r -d '' agents_file; do
     status=1
   fi
 
-  if [[ ! -f "$claude_file" ]]; then
-    echo "$agents_file has no sibling CLAUDE.md adapter" >&2
+  if [[ ! -L "$claude_file" ]]; then
+    echo "$agents_file has no sibling CLAUDE.md symlink" >&2
     status=1
-  elif [[ $(head -n 1 "$claude_file") != "@AGENTS.md" ]]; then
-    echo "$claude_file must start with @AGENTS.md" >&2
+  elif [[ $(readlink "$claude_file") != "AGENTS.md" ]]; then
+    echo "$claude_file must link to sibling AGENTS.md" >&2
+    status=1
+  elif [[ ! -f "$claude_file" ]]; then
+    echo "$claude_file is a dangling symlink" >&2
     status=1
   fi
 done < <(
@@ -49,7 +47,7 @@ while IFS= read -r -d '' claude_file; do
   fi
 
   if [[ ! -f "$agents_file" ]]; then
-    echo "$claude_file imports a missing sibling AGENTS.md" >&2
+    echo "$claude_file links to a missing sibling AGENTS.md" >&2
     status=1
   fi
 done < <(
