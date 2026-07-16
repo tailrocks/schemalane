@@ -9,7 +9,7 @@ use pg_query::protobuf::{
 use crate::expr::{fmt_index_elem, fmt_node, fmt_range_var, fmt_type_name, quote_identifier};
 use crate::{FormatError, INDENT};
 
-use super::table_body::{ColumnParts, TableItem, fmt_column_line, fmt_table_body};
+use super::table_body::{ColumnParts, TableItem, column_widths, fmt_column_line, fmt_table_body};
 use super::{name_list_to_string, node_string_list};
 
 pub(crate) fn fmt_create_enum(stmt: &CreateEnumStmt) -> Result<String, FormatError> {
@@ -449,23 +449,7 @@ pub(crate) fn fmt_alter_table(stmt: &AlterTableStmt) -> Result<String, FormatErr
         .collect();
 
     let align = add_columns.len() > 1;
-    let (max_name, max_type, max_default) = if align {
-        (
-            add_columns.iter().map(|c| c.name.len()).max().unwrap_or(0),
-            add_columns
-                .iter()
-                .map(|c| c.type_str.len())
-                .max()
-                .unwrap_or(0),
-            add_columns
-                .iter()
-                .map(|c| c.default_expr.as_ref().map_or(0, String::len))
-                .max()
-                .unwrap_or(0),
-        )
-    } else {
-        (0, 0, 0)
-    };
+    let widths = column_widths(add_columns.iter().copied());
 
     let total = items.len();
     let mut out = header;
@@ -476,7 +460,7 @@ pub(crate) fn fmt_alter_table(stmt: &AlterTableStmt) -> Result<String, FormatErr
         match item {
             AlterItem::AddColumn(col) if align => {
                 out.push_str("ADD COLUMN ");
-                out.push_str(&fmt_column_line(col, max_name, max_type, max_default));
+                out.push_str(&fmt_column_line(col, widths));
             }
             AlterItem::AddColumn(col) => {
                 let mut s = format!("ADD COLUMN {} {}", col.name, col.type_str);

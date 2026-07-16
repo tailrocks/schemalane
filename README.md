@@ -16,6 +16,7 @@ Schemalane CLI supports:
 - `schemalane init`
 - `schemalane migrate up`
 - `schemalane migrate status`
+- `schemalane migrate validate`
 - `schemalane migrate fresh`
 
 ## Testing
@@ -102,9 +103,46 @@ cargo run -p schemalane-cli -- migrate -d ./migration up
 DATABASE_URL="$DATABASE_URL" cargo run -p schemalane-cli -- migrate status
 ```
 
+Validate local migrations against database history without applying anything:
+
+```sh
+DATABASE_URL="$DATABASE_URL" cargo run -p schemalane-cli -- migrate validate
+```
+
+`validate` rejects failed history with exit code 4 and missing or checksum-mismatched
+history with exit code 3. Pending migrations are valid unless
+`--fail-on-pending` is set. `--format table|json` controls output; JSON wraps the
+status report with `"validation": { "valid": ... }`.
+
+Preview the exact pending `up` plan without applying it:
+
+```sh
+DATABASE_URL="$DATABASE_URL" cargo run -p schemalane-cli -- migrate up --dry-run
+```
+
+Dry-run performs the same discovery, history, drift, SQL parsing, and transaction-mode
+gates as `up`, then prints pending SQL and transaction modes. Rust source is not
+previewable. `--format json` emits the structured plan. Dry-run does not acquire the
+advisory lock, so its result can become stale if another runner migrates concurrently.
+
 ```sh
 DATABASE_URL="$DATABASE_URL" cargo run -p schemalane-cli -- migrate fresh --confirm yes
 ```
+
+## PostgreSQL TLS
+
+Schemalane reads `sslmode` from the PostgreSQL URL:
+
+- `sslmode=disable` uses plaintext.
+- `sslmode=prefer` uses TLS when the server offers it, otherwise falls back to plaintext.
+- `sslmode=require` requires TLS.
+
+TLS server certificates are verified against the operating system trust store for both
+`prefer` and `require`; a server offering TLS with an untrusted certificate is rejected.
+Current URL parsing does not support `verify-ca` or `verify-full`. Custom CA files and
+client certificates are also not supported yet. Channel binding accepts
+`channel_binding=disable|prefer|require`; the rustls connector supplies the
+`tls-server-end-point` binding when TLS is active and the certificate supports it.
 
 ## Notes
 

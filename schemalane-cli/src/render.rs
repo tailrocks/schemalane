@@ -20,6 +20,25 @@ pub(crate) const INDENT: &str = " ";
 pub(crate) const MAX_PREVIEW_WIDTH: usize = 60;
 pub(crate) const STATUS_WIDTH: usize = 7;
 
+/// Render an error plus every source that its `Display` output did not already include.
+///
+/// Several database libraries intentionally keep their concise `Display` text generic while
+/// exposing actionable details (for example, a TLS certificate rejection) through
+/// [`std::error::Error::source`]. CLI boundaries must preserve that chain.
+pub(crate) fn format_error_chain(error: &(dyn std::error::Error + 'static)) -> String {
+    let mut rendered = error.to_string();
+    let mut source = error.source();
+    while let Some(cause) = source {
+        let cause_text = cause.to_string();
+        if !rendered.ends_with(&cause_text) {
+            rendered.push_str("\nCaused by: ");
+            rendered.push_str(&cause_text);
+        }
+        source = cause.source();
+    }
+    rendered
+}
+
 pub(crate) fn sanitize_terminal(text: &str) -> String {
     text.chars()
         .filter(|character| !character.is_control() || *character == '\n' || *character == '\t')

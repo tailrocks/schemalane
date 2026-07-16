@@ -20,6 +20,8 @@
 //! migration. Non-transactional SQL and Rust migrations record history after
 //! execution and therefore have at-least-once semantics; make them idempotent.
 
+#![deny(missing_docs)]
+
 mod checksum;
 mod config;
 mod discovery;

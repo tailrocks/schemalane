@@ -91,7 +91,7 @@ pub(crate) enum MigrateCommand {
         #[arg(long)]
         fail_on_pending: bool,
     },
-    /// Drop all schemas and re-apply migrations.
+    /// Drop the target schema and re-apply migrations.
     Fresh {
         /// Pass "yes" to confirm destructive schema drop.
         #[arg(long)]

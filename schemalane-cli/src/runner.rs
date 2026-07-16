@@ -22,6 +22,8 @@ use crate::render::Verbosity;
 #[cfg(test)]
 use crate::render::truncate_preview;
 
+use crate::render::format_error_chain;
+
 /// Runs the embedded migration CLI with a generated migrator factory.
 pub struct EmbeddedRunner {
     migrations_dir: &'static str,
@@ -43,7 +45,7 @@ impl EmbeddedRunner {
     /// Runs with process arguments and exits using the specification's error code.
     pub async fn run(self) {
         if let Err(err) = self.run_with(std::env::args_os()).await {
-            eprintln!("{err}");
+            eprintln!("{}", format_error_chain(&err));
             std::process::exit(err.exit_code());
         }
     }
@@ -78,7 +80,7 @@ impl EmbeddedRunner {
 /// Runs the standalone CLI and exits using the specification's error code.
 pub async fn run_cli() {
     if let Err(err) = run_cli_with(std::env::args_os()).await {
-        eprintln!("{err}");
+        eprintln!("{}", format_error_chain(&err));
         std::process::exit(err.exit_code());
     }
 }
@@ -118,6 +120,20 @@ mod tests {
     use clap::Parser;
     use schemalane_core::{MigrationState, StatusEntry, StatusReport, StatusSummary};
     use std::path::{Path, PathBuf};
+
+    #[test]
+    fn error_rendering_preserves_nested_causes() {
+        let certificate = std::io::Error::other("invalid peer certificate: UnknownIssuer");
+        let handshake = std::io::Error::new(std::io::ErrorKind::ConnectionAborted, certificate);
+        let error = schemalane_core::SchemalaneError::Io(handshake);
+
+        let rendered = super::format_error_chain(&error);
+        assert!(rendered.contains("IO error"), "got: {rendered}");
+        assert!(
+            rendered.contains("invalid peer certificate: UnknownIssuer"),
+            "got: {rendered}"
+        );
+    }
 
     fn unwrap_migrate(cli: Cli) -> MigrateArgs {
         match cli.command {

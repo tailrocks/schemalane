@@ -53,7 +53,7 @@ execute it. Both `validate` and `migrate` exited nonzero under defaults.
   displayed database version.
 - Drift, checksum, locking, and history latest-row logic do not require strict
   ordering.
-- Online `validate` from spike 037 currently permits all pending migrations,
+- Online `validate` currently permits all pending migrations,
   so matching Flyway strict ordering would need coordinated validation rules.
 
 ## Options memo

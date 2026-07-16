@@ -35,13 +35,8 @@ jobs:
       - name: Test
         run: cargo test --workspace --locked --all-targets --all-features
 
-      - name: Publish dry run
-        run: |
-          cargo publish --dry-run --locked --allow-dirty -p schemalane-version
-          cargo publish --dry-run --locked --allow-dirty -p schemalane-macros
-          cargo publish --dry-run --locked --allow-dirty -p pg_query_fmt
-          cargo package --locked --allow-dirty -p schemalane-core
-          cargo package --locked --allow-dirty -p schemalane-cli
+      - name: Package workspace
+        run: cargo package --workspace --locked --allow-dirty
 
   integration:
     name: Integration (Postgres)

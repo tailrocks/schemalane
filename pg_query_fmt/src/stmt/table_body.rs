@@ -12,6 +12,32 @@ pub(crate) struct ColumnParts {
     pub(crate) constraints: String,
 }
 
+#[derive(Clone, Copy)]
+pub(crate) struct ColumnWidths {
+    name: usize,
+    type_name: usize,
+    default: usize,
+}
+
+pub(crate) fn column_widths<'a>(
+    columns: impl IntoIterator<Item = &'a ColumnParts>,
+) -> ColumnWidths {
+    columns.into_iter().fold(
+        ColumnWidths {
+            name: 0,
+            type_name: 0,
+            default: 0,
+        },
+        |widths, column| ColumnWidths {
+            name: widths.name.max(column.name.len()),
+            type_name: widths.type_name.max(column.type_str.len()),
+            default: widths
+                .default
+                .max(column.default_expr.as_ref().map_or(0, String::len)),
+        },
+    )
+}
+
 pub(crate) fn fmt_table_body(
     header: &str,
     columns: &[ColumnParts],
@@ -37,33 +63,16 @@ pub(crate) fn fmt_table_body(
         return format!("{header} ({single})");
     }
 
-    let max_name = columns
-        .iter()
-        .map(|column| column.name.len())
-        .max()
-        .unwrap_or(0);
-    let max_type = columns
-        .iter()
-        .map(|column| column.type_str.len())
-        .max()
-        .unwrap_or(0);
-    let max_default = columns
-        .iter()
-        .map(|column| column.default_expr.as_ref().map_or(0, String::len))
-        .max()
-        .unwrap_or(0);
+    let widths = column_widths(columns);
     let mut output = String::with_capacity(all_items.len() * 80);
     output.push_str(header);
     output.push_str(" (\n");
     for (index, item) in all_items.iter().enumerate() {
         output.push_str(INDENT);
         match item {
-            TableItem::Column(column_index) => output.push_str(&fmt_column_line(
-                &columns[*column_index],
-                max_name,
-                max_type,
-                max_default,
-            )),
+            TableItem::Column(column_index) => {
+                output.push_str(&fmt_column_line(&columns[*column_index], widths));
+            }
             TableItem::Constraint(text) => output.push_str(text),
         }
         if index + 1 < all_items.len() {
@@ -75,30 +84,27 @@ pub(crate) fn fmt_table_body(
     output
 }
 
-pub(crate) fn fmt_column_line(
-    column: &ColumnParts,
-    max_name: usize,
-    max_type: usize,
-    max_default: usize,
-) -> String {
+pub(crate) fn fmt_column_line(column: &ColumnParts, widths: ColumnWidths) -> String {
     let mut line = String::new();
     line.push_str(&column.name);
-    line.push_str(&" ".repeat(max_name - column.name.len()));
+    line.push_str(&" ".repeat(widths.name - column.name.len()));
     line.push(' ');
     line.push_str(&column.type_str);
-    if max_default > 0 {
+    if widths.default > 0 {
         if let Some(default) = &column.default_expr {
-            line.push_str(&" ".repeat(max_type - column.type_str.len()));
+            line.push_str(&" ".repeat(widths.type_name - column.type_str.len()));
             line.push(' ');
             line.push_str(default);
             if !column.constraints.is_empty() {
-                line.push_str(&" ".repeat(max_default - default.len()));
+                line.push_str(&" ".repeat(widths.default - default.len()));
             }
         } else if !column.constraints.is_empty() {
-            line.push_str(&" ".repeat(max_type - column.type_str.len() + 1 + max_default));
+            line.push_str(
+                &" ".repeat(widths.type_name - column.type_str.len() + 1 + widths.default),
+            );
         }
     } else if !column.constraints.is_empty() {
-        line.push_str(&" ".repeat(max_type - column.type_str.len()));
+        line.push_str(&" ".repeat(widths.type_name - column.type_str.len()));
     }
     if !column.constraints.is_empty() {
         line.push(' ');

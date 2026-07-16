@@ -10,10 +10,15 @@ use std::path::PathBuf;
 #[non_exhaustive]
 /// Reconciliation state of one migration script.
 pub enum MigrationState {
+    /// Local migration matches a successful history row.
     Success,
+    /// Local migration has no successful history row yet.
     Pending,
+    /// The latest history row records an unsuccessful execution.
     Failed,
+    /// A history row has no corresponding local migration.
     Missing,
+    /// Local content differs from the checksum stored in history.
     ChecksumMismatch,
 }
 
@@ -21,15 +26,24 @@ pub enum MigrationState {
 #[non_exhaustive]
 /// One migration row in a status report.
 pub struct StatusEntry {
+    /// Migration version, or `None` for an unversioned history row.
     pub version: Option<String>,
+    /// Human-readable migration description.
     pub description: String,
     #[serde(rename = "type")]
+    /// Flyway-compatible migration type.
     pub migration_type: String,
+    /// Migration filename recorded locally or in history.
     pub script: String,
+    /// Local or recorded Flyway-compatible checksum, when available.
     pub checksum: Option<i32>,
+    /// History insertion rank, absent for a pending local migration.
     pub installed_rank: Option<i32>,
+    /// Database installation timestamp rendered as text, when applied.
     pub installed_on: Option<String>,
+    /// Recorded migration execution duration in milliseconds.
     pub execution_time_ms: Option<i32>,
+    /// Reconciled relationship between local migration and history.
     pub state: MigrationState,
 }
 impl StatusEntry {
@@ -64,10 +78,15 @@ impl StatusEntry {
 #[non_exhaustive]
 /// Counts status entries by reconciliation state.
 pub struct StatusSummary {
+    /// Number of matching successful migrations.
     pub success: usize,
+    /// Number of unapplied local migrations.
     pub pending: usize,
+    /// Number of migrations whose latest history row failed.
     pub failed: usize,
+    /// Number of history migrations missing locally.
     pub missing: usize,
+    /// Number of applied migrations whose local checksum changed.
     pub checksum_mismatch: usize,
 }
 impl StatusSummary {
@@ -93,9 +112,13 @@ impl StatusSummary {
 #[non_exhaustive]
 /// Status of a configured schema and its local migration set.
 pub struct StatusReport {
+    /// `PostgreSQL` schema reconciled by the report.
     pub schema: String,
+    /// Unqualified schema-history table name.
     pub history_table: String,
+    /// Deterministically ordered migration reconciliation entries.
     pub migrations: Vec<StatusEntry>,
+    /// Counts derived from `migrations`.
     pub summary: StatusSummary,
 }
 impl StatusReport {
@@ -119,26 +142,36 @@ impl StatusReport {
 #[non_exhaustive]
 /// Metadata for one migration applied during a run.
 pub struct AppliedMigration {
+    /// Original migration version text.
     pub version: String,
+    /// Human-readable migration description.
     pub description: String,
     #[serde(rename = "type")]
+    /// Flyway-compatible migration type.
     pub migration_type: String,
+    /// Applied migration filename.
     pub script: String,
+    /// Wall-clock application duration in milliseconds.
     pub execution_time_ms: i32,
 }
 #[derive(Debug, Clone, Serialize, Default)]
 #[non_exhaustive]
 /// Result of applying or freshly reapplying migrations.
 pub struct RunReport {
+    /// Migrations successfully applied during this run.
     pub applied: Vec<AppliedMigration>,
+    /// Already-applied migrations skipped by this run.
     pub skipped: usize,
 }
 #[derive(Debug, Clone, Serialize, Default)]
 #[non_exhaustive]
 /// Files created and overwritten by project initialization.
 pub struct InitReport {
+    /// Root directory of the initialized migration project.
     pub root: PathBuf,
+    /// Files newly created by initialization.
     pub created: Vec<PathBuf>,
+    /// Existing files replaced because force mode was enabled.
     pub overwritten: Vec<PathBuf>,
 }
 
@@ -159,10 +192,14 @@ pub enum PlannedTransactionMode {
 #[derive(Debug, Clone, Serialize)]
 #[non_exhaustive]
 pub struct PlannedMigration {
+    /// Original migration version text.
     pub version: String,
+    /// Pending migration filename.
     pub script: String,
     #[serde(rename = "type")]
+    /// Flyway-compatible migration type.
     pub migration_type: String,
+    /// Transaction policy that real `up` would use.
     pub transaction_mode: PlannedTransactionMode,
     /// Raw SQL statements in execution order; empty for Rust migrations.
     pub statements: Vec<String>,
@@ -172,8 +209,11 @@ pub struct PlannedMigration {
 #[derive(Debug, Clone, Serialize)]
 #[non_exhaustive]
 pub struct UpPlan {
+    /// `PostgreSQL` schema against which history was reconciled.
     pub schema: String,
+    /// Unqualified schema-history table name.
     pub history_table: String,
+    /// Pending migrations in execution order.
     pub migrations: Vec<PlannedMigration>,
 }
 pub(crate) fn build_status_report(

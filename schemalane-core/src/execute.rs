@@ -141,6 +141,9 @@ where
     }
 }
 
+/// Rust migrations use raw BEGIN/COMMIT because their public executor future borrows `&Client`;
+/// the typed transaction API requires `&mut Client` for the same lifetime. Best-effort rollback
+/// is deliberate: if it fails, dropping the detached session aborts the transaction server-side.
 pub(crate) async fn execute_rust_migration(
     client: &mut Client,
     migration: &RustMigrationExecutor,

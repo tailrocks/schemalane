@@ -13,6 +13,10 @@ contract: filename rules are in §3, checksums in §6.3, and exit codes in §8.
 - `schemalane-cli` — `schemalane` binary, output rendering, TLS setup, and
   delegation to migration crates through `cargo run`.
 - `schemalane-macros` — compile-time `embed_migrations!` proc macro.
+- `schemalane-version` — shared Flyway-compatible version and migration
+  filename parser used by core, CLI, and macros.
+- `schemalane-embed-tests` — unpublished compile-time codegen corpus for
+  `embed_migrations!`.
 - `pg_query_fmt` — standalone SQL formatter/highlighter over the `pg_query`
   PostgreSQL AST.
 
@@ -54,14 +58,15 @@ contract: filename rules are in §3, checksums in §6.3, and exit codes in §8.
 
 ## Releasing
 
-The manual GitHub Actions Release workflow publishes macros, `pg_query_fmt`,
-core, then CLI. Versions are managed independently in crate manifests. The
-workflow skips versions already on crates.io and waits for sparse-index
-propagation before publishing dependents. The initial release must happen
-before dependent package verification and generated crates can resolve fully.
+The manual GitHub Actions Release workflow publishes `schemalane-version`,
+macros, `pg_query_fmt`, core, then CLI. Versions are managed independently in
+crate manifests. The workflow skips versions already on crates.io and waits for
+sparse-index propagation before publishing dependents. CI verifies the complete
+interdependent source-only workspace with
+`cargo package --workspace --locked --allow-dirty`.
 
 ## Plans directory
 
-`plans/` contains the audit-generated implementation plans. Follow the order
-and live status in `plans/README.md`; verify every done criterion and honor each
-plan's STOP conditions against current code.
+`plans/designs/` contains completed direction-spike decision records. No active
+numbered implementation plans remain. Future work requires a new authorized
+plan or specification.
