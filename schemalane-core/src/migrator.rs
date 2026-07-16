@@ -3,8 +3,6 @@ use deadpool_postgres::Pool;
 use pg_query::protobuf;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::pin::Pin;
-use std::sync::Arc;
 use std::time::Instant;
 use tokio_postgres::types::ToSql;
 use tokio_postgres::{Client, Transaction};
@@ -81,57 +79,7 @@ pub fn init_migration_project(path: &Path, force: bool) -> Result<InitReport, Sc
     })
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[non_exhaustive]
-pub enum RustTransactionMode {
-    NoTransaction,
-    Transaction,
-}
-
-pub type RustMigrationFuture<'a> =
-    Pin<Box<dyn Future<Output = Result<(), tokio_postgres::Error>> + Send + 'a>>;
-
-type DynRustMigrationFn = dyn for<'a> Fn(&'a Client) -> RustMigrationFuture<'a> + Send + Sync;
-
-#[derive(Clone)]
-pub struct RustMigrationExecutor {
-    transaction_mode: RustTransactionMode,
-    run: Arc<DynRustMigrationFn>,
-}
-
-impl RustMigrationExecutor {
-    pub fn new<F>(run: F) -> Self
-    where
-        F: for<'a> Fn(&'a Client) -> RustMigrationFuture<'a> + Send + Sync + 'static,
-    {
-        Self::with_mode(RustTransactionMode::NoTransaction, run)
-    }
-
-    pub fn transactional<F>(run: F) -> Self
-    where
-        F: for<'a> Fn(&'a Client) -> RustMigrationFuture<'a> + Send + Sync + 'static,
-    {
-        Self::with_mode(RustTransactionMode::Transaction, run)
-    }
-
-    pub fn with_mode<F>(transaction_mode: RustTransactionMode, run: F) -> Self
-    where
-        F: for<'a> Fn(&'a Client) -> RustMigrationFuture<'a> + Send + Sync + 'static,
-    {
-        Self {
-            transaction_mode,
-            run: Arc::new(run),
-        }
-    }
-
-    const fn transaction_mode(&self) -> RustTransactionMode {
-        self.transaction_mode
-    }
-
-    async fn up(&self, client: &Client) -> Result<(), tokio_postgres::Error> {
-        (self.run)(client).await
-    }
-}
+use crate::{RustMigrationExecutor, RustTransactionMode};
 
 pub struct SchemalaneMigrator {
     config: SchemalaneConfig,
