@@ -402,6 +402,9 @@ impl SchemalaneMigrator {
         self
     }
 
+    /// Transactional SQL migrations commit their history row atomically with the migration.
+    /// Non-transactional SQL and Rust migrations record history after execution and therefore
+    /// have at-least-once semantics; make those migrations idempotent.
     pub async fn up(&self, pool: &Pool) -> Result<RunReport, SchemalaneError> {
         self.up_with_observer(pool, &NoopMigrationObserver).await
     }
@@ -458,20 +461,25 @@ impl SchemalaneMigrator {
                 });
 
                 let started = Instant::now();
-                let run_result = self.apply_migration(pool, migration, observer).await;
+                let history_write = self.history_write(migration, &installed_by, next_rank);
+                let run_result = self
+                    .apply_migration(pool, migration, observer, &history_write)
+                    .await;
                 let execution_time_ms = millis_i32(started.elapsed().as_millis());
 
                 match run_result {
-                    Ok(()) => {
-                        self.insert_history_row(
-                            &client,
-                            migration,
-                            &installed_by,
-                            execution_time_ms,
-                            true,
-                            next_rank,
-                        )
-                        .await?;
+                    Ok(applied) => {
+                        if applied == Applied::NeedsHistoryRow {
+                            self.insert_history_row(
+                                &client,
+                                migration,
+                                &installed_by,
+                                execution_time_ms,
+                                true,
+                                next_rank,
+                            )
+                            .await?;
+                        }
                         next_rank += 1;
                         applied_success.insert(migration.script.clone());
                         report.applied.push(AppliedMigration {
@@ -558,6 +566,9 @@ impl SchemalaneMigrator {
         ))
     }
 
+    /// Transactional SQL migrations commit their history row atomically with the migration.
+    /// Non-transactional SQL and Rust migrations record history after execution and therefore
+    /// have at-least-once semantics; make those migrations idempotent.
     pub async fn fresh(&self, pool: &Pool, confirmed: bool) -> Result<RunReport, SchemalaneError> {
         self.fresh_with_observer(pool, confirmed, &NoopMigrationObserver)
             .await
@@ -598,20 +609,25 @@ impl SchemalaneMigrator {
                 });
 
                 let started = Instant::now();
-                let run_result = self.apply_migration(pool, migration, observer).await;
+                let history_write = self.history_write(migration, &installed_by, next_rank);
+                let run_result = self
+                    .apply_migration(pool, migration, observer, &history_write)
+                    .await;
                 let execution_time_ms = millis_i32(started.elapsed().as_millis());
 
                 match run_result {
-                    Ok(()) => {
-                        self.insert_history_row(
-                            &client,
-                            migration,
-                            &installed_by,
-                            execution_time_ms,
-                            true,
-                            next_rank,
-                        )
-                        .await?;
+                    Ok(applied) => {
+                        if applied == Applied::NeedsHistoryRow {
+                            self.insert_history_row(
+                                &client,
+                                migration,
+                                &installed_by,
+                                execution_time_ms,
+                                true,
+                                next_rank,
+                            )
+                            .await?;
+                        }
                         next_rank += 1;
                         report.applied.push(AppliedMigration {
                             version: migration.version_text.clone(),
@@ -874,7 +890,8 @@ impl SchemalaneMigrator {
         pool: &Pool,
         migration: &DiscoveredMigration,
         observer: &O,
-    ) -> Result<(), SchemalaneError>
+        history_write: &HistoryWrite<'_>,
+    ) -> Result<Applied, SchemalaneError>
     where
         O: MigrationObserver + ?Sized,
     {
@@ -887,7 +904,14 @@ impl SchemalaneMigrator {
             } => {
                 let mut client = pool.get().await?;
                 self.set_search_path(&client).await?;
-                execute_sql_migration(&mut client, content, &migration_info, observer).await
+                execute_sql_migration(
+                    &mut client,
+                    content,
+                    &migration_info,
+                    observer,
+                    history_write,
+                )
+                .await
             }
             MigrationSource::RustFile(path) => {
                 let executor = self
@@ -904,8 +928,27 @@ impl SchemalaneMigrator {
                 self.set_search_path(&client).await?;
                 execute_rust_migration(&mut client, executor)
                     .await
-                    .map_err(SchemalaneError::Db)
+                    .map_err(SchemalaneError::Db)?;
+                Ok(Applied::NeedsHistoryRow)
             }
+        }
+    }
+
+    fn history_write<'a>(
+        &self,
+        migration: &'a DiscoveredMigration,
+        installed_by: &'a str,
+        installed_rank: i32,
+    ) -> HistoryWrite<'a> {
+        HistoryWrite {
+            table_sql: qualified_table(&self.config.schema, &self.config.history_table),
+            installed_rank,
+            version: &migration.version_text,
+            description: &migration.description_display,
+            migration_type: migration.migration_type.as_history_type(),
+            script: &migration.script,
+            checksum: migration.checksum,
+            installed_by,
         }
     }
 
@@ -1351,10 +1394,12 @@ async fn execute_sql_migration<O>(
     sql: &str,
     migration: &MigrationInfo,
     observer: &O,
-) -> Result<(), SchemalaneError>
+    history_write: &HistoryWrite<'_>,
+) -> Result<Applied, SchemalaneError>
 where
     O: MigrationObserver + ?Sized,
 {
+    let started = Instant::now();
     let statements = parse_sql_migration(sql)?;
     let total_statements = statements.len();
 
@@ -1372,7 +1417,14 @@ where
                     return Err(SchemalaneError::Db(err));
                 }
             }
+            insert_history_row_txn(
+                &txn,
+                history_write,
+                millis_i32(started.elapsed().as_millis()),
+            )
+            .await?;
             txn.commit().await?;
+            Ok(Applied::HistoryRecorded)
         }
         SqlTransactionMode::NonTransactional => {
             for (index, stmt) in statements.iter().enumerate() {
@@ -1387,9 +1439,34 @@ where
                 .await
                 .map_err(SchemalaneError::Db)?;
             }
+            Ok(Applied::NeedsHistoryRow)
         }
     }
+}
 
+async fn insert_history_row_txn(
+    txn: &Transaction<'_>,
+    history: &HistoryWrite<'_>,
+    execution_time: i32,
+) -> Result<(), SchemalaneError> {
+    let sql = format!(
+        "INSERT INTO {} (\"installed_rank\", \"version\", \"description\", \"type\", \"script\", \"checksum\", \"installed_by\", \"execution_time\", \"success\") VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)",
+        history.table_sql
+    );
+    let version = Some(history.version);
+    let success = true;
+    let params: Vec<&(dyn ToSql + Sync)> = vec![
+        &history.installed_rank,
+        &version,
+        &history.description,
+        &history.migration_type,
+        &history.script,
+        &history.checksum,
+        &history.installed_by,
+        &execution_time,
+        &success,
+    ];
+    txn.execute(&sql, &params).await?;
     Ok(())
 }
 
@@ -1780,6 +1857,23 @@ struct DiscoveredMigration {
     checksum: Option<i32>,
     migration_type: MigrationType,
     source: MigrationSource,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Applied {
+    HistoryRecorded,
+    NeedsHistoryRow,
+}
+
+struct HistoryWrite<'a> {
+    table_sql: String,
+    installed_rank: i32,
+    version: &'a str,
+    description: &'a str,
+    migration_type: &'a str,
+    script: &'a str,
+    checksum: Option<i32>,
+    installed_by: &'a str,
 }
 
 impl DiscoveredMigration {

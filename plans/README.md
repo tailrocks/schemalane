@@ -40,7 +40,7 @@ Wave B — hardening & structure prerequisites:
 | 017 | CLAUDE.md contributor/agent guide | P2 | S | — | DONE |
 | 018 | up-path perf: history map, rank counter, single-pass IO | P2 | S | 001 | DONE |
 | 019 | State-model unit tests + SQL-failure/lock integration tests | P1 | M | 001 | DONE |
-| 020 | Success history row atomic with migration txn | P2 | M | 001, 018, 019 | TODO |
+| 020 | Success history row atomic with migration txn | P2 | M | 001, 018, 019 | DONE |
 | 021 | One detached session connection (lock leak, search_path, pool≥3) | P2 | M | 001, 019 | TODO |
 | 022 | CLI stops double discovery/status (`on_run_planned`) | P3 | M | 018, 021 | TODO |
 | 023 | CLI contract tests: exit codes, JSON shape, delegation, env | P2 | M | (003, 007 help) | TODO |

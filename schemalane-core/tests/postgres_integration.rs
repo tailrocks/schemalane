@@ -586,6 +586,88 @@ fn sql_migration_failure_rolls_back_and_records_failed_row() -> Result<(), Box<d
 
 #[test]
 #[ignore = "requires Docker daemon"]
+fn transactional_migration_and_history_commit_atomically() -> Result<(), Box<dyn Error + 'static>> {
+    let node = Postgres::default().start()?;
+    let db_url = connection_string(&node)?;
+    let temp = TempDir::new()?;
+    let migrations_dir = temp.path().join("migrations");
+    fs::create_dir_all(&migrations_dir)?;
+    write_migration(
+        &migrations_dir,
+        "V1__atomic.sql",
+        "CREATE TABLE atomic_t (id int); INSERT INTO atomic_t VALUES (1);",
+    )?;
+    tokio::runtime::Runtime::new()?.block_on(async move {
+        let pool = create_pool(&db_url)?;
+        let migrator = SchemalaneMigrator::new(SchemalaneConfig {
+            migrations_dir,
+            ..Default::default()
+        });
+        assert_eq!(migrator.up(&pool).await?.applied.len(), 1);
+        assert_eq!(
+            scalar_i64(&pool, "SELECT COUNT(*) AS count FROM public.atomic_t").await?,
+            1
+        );
+        assert_eq!(
+            scalar_i64(
+                &pool,
+                "SELECT COUNT(*) AS count FROM public.flyway_schema_history WHERE \"success\""
+            )
+            .await?,
+            1
+        );
+        Ok::<(), Box<dyn Error + 'static>>(())
+    })?;
+    Ok(())
+}
+
+#[test]
+#[ignore = "requires Docker daemon"]
+fn failed_transactional_migration_leaves_only_failed_row() -> Result<(), Box<dyn Error + 'static>> {
+    let node = Postgres::default().start()?;
+    let db_url = connection_string(&node)?;
+    let temp = TempDir::new()?;
+    let migrations_dir = temp.path().join("migrations");
+    fs::create_dir_all(&migrations_dir)?;
+    write_migration(
+        &migrations_dir,
+        "V1__atomic_fail.sql",
+        "CREATE TABLE atomic_fail (id int); SELECT * FROM missing_atomic_table;",
+    )?;
+    tokio::runtime::Runtime::new()?.block_on(async move {
+        let pool = create_pool(&db_url)?;
+        let migrator = SchemalaneMigrator::new(SchemalaneConfig {
+            migrations_dir,
+            ..Default::default()
+        });
+        assert!(matches!(
+            migrator.up(&pool).await,
+            Err(SchemalaneError::MigrationExecution { .. })
+        ));
+        assert!(!table_exists(&pool, "atomic_fail").await?);
+        assert_eq!(
+            scalar_i64(
+                &pool,
+                "SELECT COUNT(*) AS count FROM public.flyway_schema_history WHERE NOT \"success\""
+            )
+            .await?,
+            1
+        );
+        assert_eq!(
+            scalar_i64(
+                &pool,
+                "SELECT COUNT(*) AS count FROM public.flyway_schema_history"
+            )
+            .await?,
+            1
+        );
+        Ok::<(), Box<dyn Error + 'static>>(())
+    })?;
+    Ok(())
+}
+
+#[test]
+#[ignore = "requires Docker daemon"]
 fn failed_history_blocks_next_up_until_fixed() -> Result<(), Box<dyn Error + 'static>> {
     let node = Postgres::default().start()?;
     let db_url = connection_string(&node)?;
