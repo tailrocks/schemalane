@@ -2,6 +2,7 @@
 
 mod config;
 mod error;
+mod init;
 mod migrator;
 mod observer;
 mod report;
@@ -9,9 +10,8 @@ mod rust_migration;
 
 pub use config::SchemalaneConfig;
 pub use error::SchemalaneError;
-pub use migrator::{
-    SchemalaneMigrator, derive_advisory_lock_id, init_migration_project, should_fail_on_pending,
-};
+pub use init::init_migration_project;
+pub use migrator::{SchemalaneMigrator, derive_advisory_lock_id, should_fail_on_pending};
 pub use observer::{
     MigrationFailed, MigrationFinished, MigrationInfo, MigrationObserver, MigrationStarted,
     NoopMigrationObserver, SqlStatementFailed, SqlStatementFinished, SqlStatementStarted,

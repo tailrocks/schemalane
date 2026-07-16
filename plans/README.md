@@ -56,7 +56,7 @@ Wave C — structure & docs depth:
 | 028 | Engine dedup: one apply loop, one statement executor | P3 | M | 019, 020, 021 | DONE |
 | 029 | CLI dedup: one command enum, flattened shared args | P3 | M | 023 | DONE |
 | 030 | HistoryRepository seam (all history SQL in one place) | P3 | M | 006, 020, 021 | DONE |
-| 031 | Core module split (2264-line lib.rs → modules) | P3 | L | all core plans above | TODO |
+| 031 | Core module split (2264-line lib.rs → modules) | P3 | L | all core plans above | IN PROGRESS |
 | 032 | CLI module split (1431-line lib.rs → modules) | P3 | L | 022, 029, 023 | TODO |
 | 033 | Formatter split + shared table-body emitter | P3 | M | — | TODO |
 | 034 | Core sheds pg_query_fmt dep (previews move to CLI) | P3 | M | 026, (022) | TODO |
