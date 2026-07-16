@@ -53,7 +53,7 @@ Wave C — structure & docs depth:
 
 | Plan | Title | Priority | Effort | Depends on | Status |
 |------|-------|----------|--------|------------|--------|
-| 028 | Engine dedup: one apply loop, one statement executor | P3 | M | 019, 020, 021 | TODO |
+| 028 | Engine dedup: one apply loop, one statement executor | P3 | M | 019, 020, 021 | DONE |
 | 029 | CLI dedup: one command enum, flattened shared args | P3 | M | 023 | TODO |
 | 030 | HistoryRepository seam (all history SQL in one place) | P3 | M | 006, 020, 021 | TODO |
 | 031 | Core module split (2264-line lib.rs → modules) | P3 | L | all core plans above | TODO |

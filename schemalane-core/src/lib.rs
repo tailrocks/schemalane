@@ -534,7 +534,7 @@ impl SchemalaneMigrator {
                 &history,
             ));
             let latest = latest_history_by_script(&history);
-            let mut applied_success: HashSet<String> = latest
+            let applied_success: HashSet<String> = latest
                 .values()
                 .filter(|row| row.success)
                 .map(|row| row.script.clone())
@@ -546,111 +546,16 @@ impl SchemalaneMigrator {
                 .unwrap_or(0)
                 + 1;
 
-            let mut report = RunReport::default();
-            let total_to_apply = migrations
-                .iter()
-                .filter(|migration| !applied_success.contains(&migration.script))
-                .count();
-            let mut applied_index = 0usize;
-
-            for migration in &migrations {
-                if applied_success.contains(&migration.script) {
-                    report.skipped += 1;
-                    continue;
-                }
-
-                applied_index += 1;
-                let migration_info = migration.info();
-                observer.on_migration_start(&MigrationStarted {
-                    migration: migration_info.clone(),
-                    index: applied_index,
-                    total: total_to_apply,
-                });
-
-                let started = Instant::now();
-                let history_write = self.history_write(migration, &installed_by, next_rank);
-                let run_result = self
-                    .apply_migration(client, migration, observer, &history_write)
-                    .await;
-                let execution_time_ms = millis_i32(started.elapsed().as_millis());
-
-                match run_result {
-                    Ok(applied) => {
-                        if applied == Applied::NeedsHistoryRow {
-                            self.insert_history_row(
-                                client,
-                                migration,
-                                &installed_by,
-                                execution_time_ms,
-                                true,
-                                next_rank,
-                            )
-                            .await?;
-                        }
-                        next_rank += 1;
-                        applied_success.insert(migration.script.clone());
-                        report.applied.push(AppliedMigration {
-                            version: migration.version_text.clone(),
-                            description: migration.description_display.clone(),
-                            migration_type: migration.migration_type.as_history_type().to_owned(),
-                            script: migration.script.clone(),
-                            execution_time_ms,
-                        });
-
-                        observer.on_migration_finish(&MigrationFinished {
-                            migration: migration_info,
-                            index: applied_index,
-                            total: total_to_apply,
-                            execution_time_ms,
-                        });
-                    }
-                    Err(err) => {
-                        let mut error_message = err.to_string();
-
-                        // MixedStatements is a validation error — do not record a
-                        // failed history row because the migration never executed.
-                        if !matches!(err, SchemalaneError::MixedStatements { .. }) {
-                            match self
-                                .insert_history_row(
-                                    client,
-                                    migration,
-                                    &installed_by,
-                                    execution_time_ms,
-                                    false,
-                                    next_rank,
-                                )
-                                .await
-                            {
-                                Ok(()) => next_rank += 1,
-                                Err(insert_err) => {
-                                    error_message = format!(
-                                        "{error_message} (additionally: failed to record failed history row: {insert_err})"
-                                    );
-                                }
-                            }
-                        }
-                        let _ = next_rank;
-
-                        observer.on_migration_failed(&MigrationFailed {
-                            migration: migration_info,
-                            index: applied_index,
-                            total: total_to_apply,
-                            execution_time_ms,
-                            error: error_message,
-                        });
-
-                        return Err(match err {
-                            SchemalaneError::Db(source) => SchemalaneError::MigrationExecution {
-                                script: migration.script.clone(),
-                                source,
-                            },
-                            other => other,
-                        });
-                    }
-                }
-            }
-
-            Ok(report)
+            self.apply_all(
+                client,
+                &migrations,
+                &applied_success,
+                &installed_by,
+                &mut next_rank,
+                observer,
+                ApplyOptions { skip_applied: true },
+            )
+            .await
         }
         .await;
         Self::finish_locked_session(&session, lock_id, result).await
@@ -713,102 +618,136 @@ impl SchemalaneMigrator {
             ));
 
             let installed_by = self.resolve_installed_by(client).await?;
-            let mut report = RunReport::default();
-            let total_to_apply = migrations.len();
             let mut next_rank = 1;
-
-            for (index, migration) in migrations.iter().enumerate() {
-                let migration_info = migration.info();
-                observer.on_migration_start(&MigrationStarted {
-                    migration: migration_info.clone(),
-                    index: index + 1,
-                    total: total_to_apply,
-                });
-
-                let started = Instant::now();
-                let history_write = self.history_write(migration, &installed_by, next_rank);
-                let run_result = self
-                    .apply_migration(client, migration, observer, &history_write)
-                    .await;
-                let execution_time_ms = millis_i32(started.elapsed().as_millis());
-
-                match run_result {
-                    Ok(applied) => {
-                        if applied == Applied::NeedsHistoryRow {
-                            self.insert_history_row(
-                                client,
-                                migration,
-                                &installed_by,
-                                execution_time_ms,
-                                true,
-                                next_rank,
-                            )
-                            .await?;
-                        }
-                        next_rank += 1;
-                        report.applied.push(AppliedMigration {
-                            version: migration.version_text.clone(),
-                            description: migration.description_display.clone(),
-                            migration_type: migration.migration_type.as_history_type().to_owned(),
-                            script: migration.script.clone(),
-                            execution_time_ms,
-                        });
-
-                        observer.on_migration_finish(&MigrationFinished {
-                            migration: migration_info,
-                            index: index + 1,
-                            total: total_to_apply,
-                            execution_time_ms,
-                        });
-                    }
-                    Err(err) => {
-                        let mut error_message = err.to_string();
-
-                        if !matches!(err, SchemalaneError::MixedStatements { .. }) {
-                            match self
-                                .insert_history_row(
-                                    client,
-                                    migration,
-                                    &installed_by,
-                                    execution_time_ms,
-                                    false,
-                                    next_rank,
-                                )
-                                .await
-                            {
-                                Ok(()) => next_rank += 1,
-                                Err(insert_err) => {
-                                    error_message = format!(
-                                        "{error_message} (additionally: failed to record failed history row: {insert_err})"
-                                    );
-                                }
-                            }
-                        }
-                        let _ = next_rank;
-
-                        observer.on_migration_failed(&MigrationFailed {
-                            migration: migration_info,
-                            index: index + 1,
-                            total: total_to_apply,
-                            execution_time_ms,
-                            error: error_message,
-                        });
-
-                        return Err(match err {
-                            SchemalaneError::Db(source) => SchemalaneError::MigrationExecution {
-                                script: migration.script.clone(),
-                                source,
-                            },
-                            other => other,
-                        });
-                    }
-                }
-            }
-
-            Ok(report)
+            self.apply_all(
+                client,
+                &migrations,
+                &HashSet::new(),
+                &installed_by,
+                &mut next_rank,
+                observer,
+                ApplyOptions {
+                    skip_applied: false,
+                },
+            )
+            .await
         }
         .await;
         Self::finish_locked_session(&session, lock_id, result).await
+    }
+
+    #[allow(clippy::too_many_arguments)] // Explicit run context keeps orchestration state visible.
+    async fn apply_all<O>(
+        &self,
+        client: &mut Client,
+        migrations: &[DiscoveredMigration],
+        applied_ok: &HashSet<String>,
+        installed_by: &str,
+        next_rank: &mut i32,
+        observer: &O,
+        options: ApplyOptions,
+    ) -> Result<RunReport, SchemalaneError>
+    where
+        O: MigrationObserver + ?Sized,
+    {
+        let mut report = RunReport::default();
+        let total_to_apply = migrations
+            .iter()
+            .filter(|migration| !options.skip_applied || !applied_ok.contains(&migration.script))
+            .count();
+        let mut applied_index = 0usize;
+
+        for migration in migrations {
+            if options.skip_applied && applied_ok.contains(&migration.script) {
+                report.skipped += 1;
+                continue;
+            }
+
+            applied_index += 1;
+            let migration_info = migration.info();
+            observer.on_migration_start(&MigrationStarted {
+                migration: migration_info.clone(),
+                index: applied_index,
+                total: total_to_apply,
+            });
+
+            let started = Instant::now();
+            let history_write = self.history_write(migration, installed_by, *next_rank);
+            let run_result = self
+                .apply_migration(client, migration, observer, &history_write)
+                .await;
+            let execution_time_ms = millis_i32(started.elapsed().as_millis());
+
+            match run_result {
+                Ok(applied) => {
+                    if applied == Applied::NeedsHistoryRow {
+                        self.insert_history_row(
+                            client,
+                            migration,
+                            installed_by,
+                            execution_time_ms,
+                            true,
+                            *next_rank,
+                        )
+                        .await?;
+                    }
+                    *next_rank += 1;
+                    report.applied.push(AppliedMigration {
+                        version: migration.version_text.clone(),
+                        description: migration.description_display.clone(),
+                        migration_type: migration.migration_type.as_history_type().to_owned(),
+                        script: migration.script.clone(),
+                        execution_time_ms,
+                    });
+
+                    observer.on_migration_finish(&MigrationFinished {
+                        migration: migration_info,
+                        index: applied_index,
+                        total: total_to_apply,
+                        execution_time_ms,
+                    });
+                }
+                Err(err) => {
+                    let mut error_message = err.to_string();
+                    if !matches!(err, SchemalaneError::MixedStatements { .. }) {
+                        match self
+                            .insert_history_row(
+                                client,
+                                migration,
+                                installed_by,
+                                execution_time_ms,
+                                false,
+                                *next_rank,
+                            )
+                            .await
+                        {
+                            Ok(()) => *next_rank += 1,
+                            Err(insert_err) => {
+                                error_message = format!(
+                                    "{error_message} (additionally: failed to record failed history row: {insert_err})"
+                                );
+                            }
+                        }
+                    }
+                    let _ = next_rank;
+                    observer.on_migration_failed(&MigrationFailed {
+                        migration: migration_info,
+                        index: applied_index,
+                        total: total_to_apply,
+                        execution_time_ms,
+                        error: error_message,
+                    });
+                    return Err(match err {
+                        SchemalaneError::Db(source) => SchemalaneError::MigrationExecution {
+                            script: migration.script.clone(),
+                            source,
+                        },
+                        other => other,
+                    });
+                }
+            }
+        }
+        Ok(report)
     }
 
     async fn acquire_locked_session(
@@ -1519,7 +1458,7 @@ where
             let txn = client.transaction().await?;
             for (index, stmt) in statements.iter().enumerate() {
                 if let Err(err) =
-                    execute_statement_txn(&txn, stmt, index, total_statements, migration, observer)
+                    execute_statement(&txn, stmt, index, total_statements, migration, observer)
                         .await
                 {
                     let _ = txn.rollback().await;
@@ -1537,16 +1476,9 @@ where
         }
         SqlTransactionMode::NonTransactional => {
             for (index, stmt) in statements.iter().enumerate() {
-                execute_statement_client(
-                    client,
-                    stmt,
-                    index,
-                    total_statements,
-                    migration,
-                    observer,
-                )
-                .await
-                .map_err(SchemalaneError::Db)?;
+                execute_statement(client, stmt, index, total_statements, migration, observer)
+                    .await
+                    .map_err(SchemalaneError::Db)?;
             }
             Ok(Applied::NeedsHistoryRow)
         }
@@ -1579,9 +1511,25 @@ async fn insert_history_row_txn(
     Ok(())
 }
 
-/// Executes a single [`ParsedSqlStatement`] inside a transaction, emitting observer events.
-async fn execute_statement_txn<O>(
-    txn: &Transaction<'_>,
+trait BatchExec {
+    async fn batch(&self, sql: &str) -> Result<(), tokio_postgres::Error>;
+}
+
+impl BatchExec for Client {
+    async fn batch(&self, sql: &str) -> Result<(), tokio_postgres::Error> {
+        self.batch_execute(sql).await
+    }
+}
+
+impl BatchExec for Transaction<'_> {
+    async fn batch(&self, sql: &str) -> Result<(), tokio_postgres::Error> {
+        self.batch_execute(sql).await
+    }
+}
+
+/// Executes one SQL statement and emits its observer lifecycle.
+async fn execute_statement<E, O>(
+    executor: &E,
     stmt: &ParsedSqlStatement,
     index: usize,
     total_statements: usize,
@@ -1589,6 +1537,7 @@ async fn execute_statement_txn<O>(
     observer: &O,
 ) -> Result<(), tokio_postgres::Error>
 where
+    E: BatchExec,
     O: MigrationObserver + ?Sized,
 {
     let source_line = Some(stmt.source_line);
@@ -1603,7 +1552,7 @@ where
     });
 
     let started = Instant::now();
-    match txn.batch_execute(&stmt.sql).await {
+    match executor.batch(&stmt.sql).await {
         Ok(()) => {
             observer.on_sql_statement_finish(&SqlStatementFinished {
                 migration: migration.clone(),
@@ -1632,60 +1581,9 @@ where
     }
 }
 
-/// Executes a single [`ParsedSqlStatement`] on a client (outside transaction), emitting
-/// observer events.
-async fn execute_statement_client<O>(
-    client: &Client,
-    stmt: &ParsedSqlStatement,
-    index: usize,
-    total_statements: usize,
-    migration: &MigrationInfo,
-    observer: &O,
-) -> Result<(), tokio_postgres::Error>
-where
-    O: MigrationObserver + ?Sized,
-{
-    let source_line = Some(stmt.source_line);
-
-    observer.on_sql_statement_start(&SqlStatementStarted {
-        migration: migration.clone(),
-        statement_index: index + 1,
-        total_statements,
-        statement_preview: stmt.preview.clone(),
-        statement: stmt.sql.clone(),
-        source_line,
-    });
-
-    let started = Instant::now();
-    match client.batch_execute(&stmt.sql).await {
-        Ok(()) => {
-            observer.on_sql_statement_finish(&SqlStatementFinished {
-                migration: migration.clone(),
-                statement_index: index + 1,
-                total_statements,
-                statement_preview: stmt.preview.clone(),
-                statement: stmt.sql.clone(),
-                execution_time_ms: millis_i32(started.elapsed().as_millis()),
-                source_line,
-            });
-            Ok(())
-        }
-        Err(err) => {
-            observer.on_sql_statement_failed(&SqlStatementFailed {
-                migration: migration.clone(),
-                statement_index: index + 1,
-                total_statements,
-                statement_preview: stmt.preview.clone(),
-                statement: stmt.sql.clone(),
-                execution_time_ms: millis_i32(started.elapsed().as_millis()),
-                error: err.to_string(),
-                source_line,
-            });
-            Err(err)
-        }
-    }
-}
-
+/// Rust migrations use raw BEGIN/COMMIT because their public executor future borrows `&Client`;
+/// the typed transaction API requires `&mut Client` for the same lifetime. Best-effort rollback
+/// is deliberate: if it fails, dropping the detached session aborts the transaction server-side.
 async fn execute_rust_migration(
     client: &mut Client,
     migration: &RustMigrationExecutor,
@@ -1972,6 +1870,11 @@ struct DiscoveredMigration {
 enum Applied {
     HistoryRecorded,
     NeedsHistoryRow,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ApplyOptions {
+    skip_applied: bool,
 }
 
 struct HistoryWrite<'a> {
