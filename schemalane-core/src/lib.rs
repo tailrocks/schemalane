@@ -1895,7 +1895,7 @@ pub fn migrations_dir_exists(path: &Path) -> bool {
 mod tests {
     use super::{
         SchemalaneConfig, SchemalaneError, SchemalaneMigrator, SqlTransactionMode,
-        init_migration_project, is_non_transactional, parse_sql_migration,
+        calculate_checksum, init_migration_project, is_non_transactional, parse_sql_migration,
         resolve_sql_transaction_mode,
     };
     use std::fs;
@@ -1906,6 +1906,76 @@ mod tests {
         for code in [1, 2, 3, 4, 5, 6, 7, 42] {
             assert_eq!(SchemalaneError::Delegated { code }.exit_code(), code);
         }
+    }
+
+    // Golden values independently computed with Python's zlib.crc32 from spec §6.3.
+    #[test]
+    fn checksum_golden_values() {
+        let cases: &[(&str, &[u8], i32)] = &[
+            ("empty.sql", b"", 0),
+            ("single.sql", b"CREATE TABLE cake (id INT);", -1_600_817_622),
+            (
+                "single_nl.sql",
+                b"CREATE TABLE cake (id INT);\n",
+                -1_600_817_622,
+            ),
+            (
+                "two_lf.sql",
+                b"CREATE TABLE cake (\n    id INT\n);",
+                1_160_935_991,
+            ),
+            (
+                "utf8.sql",
+                "-- caké 🍰\nSELECT 'schöne Grüße';\n".as_bytes(),
+                -714_250_905,
+            ),
+        ];
+        for (script, bytes, expected) in cases {
+            assert_eq!(
+                calculate_checksum(script, bytes).expect("checksum"),
+                *expected,
+                "golden mismatch for {script}"
+            );
+        }
+    }
+
+    #[test]
+    fn checksum_line_endings_are_equivalent() {
+        let lf = calculate_checksum("a.sql", b"line one\nline two\n").expect("checksum");
+        let crlf = calculate_checksum("a.sql", b"line one\r\nline two\r\n").expect("checksum");
+        assert_eq!(lf, crlf, "LF and CRLF must hash identically");
+    }
+
+    #[test]
+    fn checksum_trailing_newline_is_irrelevant() {
+        let with_nl = calculate_checksum("a.sql", b"SELECT 1;\n").expect("checksum");
+        let without = calculate_checksum("a.sql", b"SELECT 1;").expect("checksum");
+        assert_eq!(with_nl, without);
+    }
+
+    #[test]
+    fn checksum_line_terminator_bytes_are_excluded() {
+        let joined = calculate_checksum("a.sql", b"ab").expect("checksum");
+        let split = calculate_checksum("a.sql", b"a\nb").expect("checksum");
+        assert_eq!(joined, split, "line terminators must not be hashed");
+        assert_eq!(
+            split,
+            calculate_checksum("a.sql", b"a\r\nb").expect("checksum")
+        );
+    }
+
+    #[test]
+    fn checksum_can_be_negative_i32() {
+        let value = calculate_checksum("neg.sql", b"negative fixture 2").expect("checksum");
+        assert!(value < 0, "expected negative checksum, got {value}");
+        assert_eq!(value, -1_301_979_683);
+    }
+
+    #[test]
+    fn checksum_rejects_non_utf8() {
+        let err =
+            calculate_checksum("bad.sql", &[0xff, 0xfe, b'a']).expect_err("non-UTF-8 must fail");
+        assert!(err.to_string().contains("not valid UTF-8"), "got: {err}");
     }
 
     fn migrator_with_files(files: &[(&str, &str)]) -> (TempDir, SchemalaneMigrator) {
