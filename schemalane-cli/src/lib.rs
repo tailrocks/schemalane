@@ -77,11 +77,12 @@ fn format_elapsed(ms: i32) -> String {
 }
 
 fn truncate_preview(s: &str, max_width: usize) -> String {
-    if s.len() <= max_width {
-        s.to_owned()
-    } else {
-        format!("{}...", &s[..max_width - 3])
+    debug_assert!(max_width >= 3, "truncate_preview needs room for ellipsis");
+    if s.chars().count() <= max_width {
+        return s.to_owned();
     }
+    let truncated: String = s.chars().take(max_width.saturating_sub(3)).collect();
+    format!("{truncated}...")
 }
 
 fn max_pending_script_len(report: &StatusReport) -> usize {
@@ -112,7 +113,11 @@ fn prompt_yes_no(prompt: &str) -> Result<bool, SchemalaneError> {
         eprint!("{prompt}");
         std::io::stderr().flush().map_err(SchemalaneError::Io)?;
         let mut answer = String::new();
-        reader.read_line(&mut answer).map_err(SchemalaneError::Io)?;
+        let read = reader.read_line(&mut answer).map_err(SchemalaneError::Io)?;
+        if read == 0 {
+            eprintln!();
+            return Ok(false);
+        }
         let trimmed = answer.trim();
         if trimmed.eq_ignore_ascii_case("yes") {
             return Ok(true);
@@ -1555,6 +1560,17 @@ mod tests {
             envs.iter()
                 .any(|(key, value)| *key == "DATABASE_URL" && value.contains("pw-classified"))
         );
+    }
+
+    #[test]
+    fn truncate_preview_is_char_boundary_safe() {
+        let short = "é".repeat(30);
+        assert_eq!(super::truncate_preview(&short, 60), short);
+
+        let long = "é".repeat(100);
+        let out = super::truncate_preview(&long, 60);
+        assert!(out.ends_with("..."));
+        assert_eq!(out.chars().count(), 60);
     }
 
     #[test]

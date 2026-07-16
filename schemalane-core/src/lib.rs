@@ -472,19 +472,24 @@ impl SchemalaneMigrator {
                         });
                     }
                     Err(err) => {
-                        let error_message = err.to_string();
+                        let mut error_message = err.to_string();
 
                         // MixedStatements is a validation error — do not record a
                         // failed history row because the migration never executed.
-                        if !matches!(err, SchemalaneError::MixedStatements { .. }) {
-                            self.insert_history_row(
+                        if !matches!(err, SchemalaneError::MixedStatements { .. })
+                            && let Err(insert_err) = self
+                                .insert_history_row(
                                 &client,
                                 migration,
                                 &installed_by,
                                 execution_time_ms,
                                 false,
                             )
-                            .await?;
+                            .await
+                        {
+                            error_message = format!(
+                                "{error_message} (additionally: failed to record failed history row: {insert_err})"
+                            );
                         }
 
                         observer.on_migration_failed(&MigrationFailed {
@@ -597,17 +602,22 @@ impl SchemalaneMigrator {
                         });
                     }
                     Err(err) => {
-                        let error_message = err.to_string();
+                        let mut error_message = err.to_string();
 
-                        if !matches!(err, SchemalaneError::MixedStatements { .. }) {
-                            self.insert_history_row(
+                        if !matches!(err, SchemalaneError::MixedStatements { .. })
+                            && let Err(insert_err) = self
+                                .insert_history_row(
                                 &client,
                                 migration,
                                 &installed_by,
                                 execution_time_ms,
                                 false,
                             )
-                            .await?;
+                            .await
+                        {
+                            error_message = format!(
+                                "{error_message} (additionally: failed to record failed history row: {insert_err})"
+                            );
                         }
 
                         observer.on_migration_failed(&MigrationFailed {
@@ -1221,7 +1231,7 @@ fn parse_sql_migration(sql: &str) -> Result<Vec<ParsedSqlStatement>, SchemalaneE
             SchemalaneError::Validation(format!("failed to parse SQL statement: {err}"))
         })?;
 
-        let source_line = offset_to_line(sql, stmt_sql);
+        let source_line = offset_to_line(sql, trimmed);
         let preview = pg_query_fmt::preview::statement_preview(&parsed);
         let node = parsed
             .protobuf
@@ -2082,6 +2092,18 @@ INSERT INTO ledger(note) VALUES ('ok');
         let statements = parse_sql_migration(";\n ;\nSELECT 1;;\n").expect("should parse");
         assert_eq!(statements.len(), 1);
         assert_eq!(statements[0].sql, "SELECT 1");
+    }
+
+    #[test]
+    fn parse_sql_migration_reports_statement_line_numbers() {
+        let sql = "SELECT 1;\n\n\nSELECT 2;\n";
+        let statements = parse_sql_migration(sql).expect("parse");
+        assert_eq!(statements.len(), 2);
+        assert_eq!(statements[0].source_line, 1);
+        assert_eq!(
+            statements[1].source_line, 4,
+            "second statement starts on line 4"
+        );
     }
 
     #[test]
