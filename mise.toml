@@ -1,0 +1,6 @@
+[tools]
+"github:rustsec/rustsec" = "cargo-audit/v0.22.2"
+"github:nextest-rs/nextest" = "cargo-nextest-0.9.140"
+
+[settings]
+idiomatic_version_file_enable_tools = ["rust"]
