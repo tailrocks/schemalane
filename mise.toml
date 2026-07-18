@@ -1,0 +1,6 @@
+[tools]
+"cargo:cargo-audit" = "0.22.2"
+"cargo:cargo-nextest" = "0.9.140"
+
+[settings]
+idiomatic_version_file_enable_tools = ["rust"]

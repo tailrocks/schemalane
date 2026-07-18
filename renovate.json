@@ -1,0 +1,25 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:best-practices"
+  ],
+  "prHourlyLimit": 0,
+  "prConcurrentLimit": 20,
+  "commitBody": "Signed-off-by: Renovate Bot <renovate@whitesourcesoftware.com>\n\nCo-authored-by: Codex <codex@openai.com>",
+  "recreateWhen": "always",
+  "customManagers": [
+    {
+      "customType": "regex",
+      "managerFilePatterns": ["/^Cargo\\.toml$/"],
+      "matchStrings": [
+        "(?<depName>termrock|fff-search)\\s*=\\s*\\{[^}]*git\\s*=\\s*\"(?<packageName>https://github\\.com/[^\"]+)\",[^}]*rev\\s*=\\s*\"(?<currentDigest>[a-f0-9]{40})\""
+      ],
+      "currentValueTemplate": "main",
+      "datasourceTemplate": "git-refs"
+    }
+  ],
+  "lockFileMaintenance": {
+    "enabled": true,
+    "schedule": ["at any time"]
+  }
+}
