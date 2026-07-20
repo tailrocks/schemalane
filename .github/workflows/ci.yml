@@ -131,3 +131,21 @@ jobs:
           github_token: ${{ secrets.GITHUB_TOKEN }}
       - name: Audit
         run: cargo audit
+
+  ci-required:
+    needs: [rust, integration, audit]
+    if: always()
+    name: CI required (${{ matrix.config.lane }})
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        config: ${{ fromJSON((github.event_name == 'workflow_dispatch' && inputs.lanes == 'both') && '[{"lane":"Velnor","runner":["self-hosted","velnor-target-mvp"],"writer":true},{"lane":"GitHub","runner":"ubuntu-26.04","writer":false}]' || (github.event_name == 'workflow_dispatch' && inputs.lanes == 'github') && '[{"lane":"GitHub","runner":"ubuntu-26.04","writer":true}]' || '[{"lane":"Velnor","runner":["self-hosted","velnor-target-mvp"],"writer":true}]') }}
+    runs-on: ${{ matrix.config.runner }}
+    steps:
+      - name: Fail on any failed or cancelled need
+        env:
+          NEEDS_JSON: ${{ toJSON(needs) }}
+        run: |
+          echo "$NEEDS_JSON" | jq -e 'to_entries | map(.value.result) | any(. == "failure" or . == "cancelled") | not' >/dev/null \
+            || { echo "A required job failed or was cancelled." >&2; exit 1; }
