@@ -15,9 +15,9 @@ Docker integration characterization performs this sequence:
 Evidence command:
 
 ```text
-cargo test -p schemalane-core --locked --test postgres_integration \
+cargo nextest run -p schemalane-core --locked --test postgres_integration \
   characterize_late_migration_is_applied_out_of_order \
-  -- --include-ignored
+  --run-ignored all
 
 test result: ok. 1 passed
 ```

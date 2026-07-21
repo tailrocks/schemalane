@@ -14,6 +14,6 @@
 ## Checks
 
 ```sh
-cargo test -p schemalane-version --locked
+cargo nextest run -p schemalane-version --locked
 cargo package -p schemalane-version --locked --allow-dirty
 ```

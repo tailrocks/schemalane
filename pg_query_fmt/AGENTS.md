@@ -23,6 +23,6 @@
 ## Checks
 
 ```sh
-cargo test -p pg_query_fmt --locked
+cargo nextest run -p pg_query_fmt --locked
 cargo doc -p pg_query_fmt --no-deps --locked
 ```

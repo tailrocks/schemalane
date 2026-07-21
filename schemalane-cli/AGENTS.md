@@ -25,7 +25,7 @@
 ## Checks
 
 ```sh
-cargo test -p schemalane-cli --locked
+cargo nextest run -p schemalane-cli --locked
 cargo run -p schemalane-cli -- migrate --help
 cargo run -p schemalane-cli -- migrate up --help
 cargo run -p schemalane-cli -- migrate validate --help

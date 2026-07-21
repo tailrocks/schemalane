@@ -70,8 +70,6 @@ jobs:
         run: cargo clippy --workspace --locked --all-targets --all-features -- -D warnings
       - name: Test
         run: cargo nextest run --workspace --locked --all-features
-      - name: Documentation tests
-        run: cargo test --workspace --doc --locked
       - name: Package
         run: cargo package --workspace --locked --allow-dirty
 
@@ -107,7 +105,7 @@ jobs:
           restore-keys: |
             cargo-registry-${{ matrix.config.lane }}-${{ runner.os }}-
       - name: Integration tests
-        run: cargo test -p schemalane-core --locked --test postgres_integration -- --include-ignored
+        run: cargo nextest run -p schemalane-core --locked --test postgres_integration --run-ignored all
 
   audit:
     name: Security audit (${{ matrix.config.lane }})

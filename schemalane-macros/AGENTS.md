@@ -14,8 +14,8 @@
 ## Checks
 
 ```sh
-cargo test -p schemalane-macros --locked
-cargo test -p schemalane-embed-tests --locked
+cargo nextest run -p schemalane-macros --locked
+cargo nextest run -p schemalane-embed-tests --locked
 ```
 
 Use unit tests for helpers, trybuild for diagnostic failures, and the embed-test
