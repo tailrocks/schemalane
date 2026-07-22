@@ -13,5 +13,5 @@
 ## Check
 
 ```sh
-cargo test -p schemalane-embed-tests --locked
+cargo nextest run -p schemalane-embed-tests --locked
 ```

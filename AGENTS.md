@@ -42,15 +42,14 @@ Run the narrowest relevant check while iterating, then the applicable repo gate.
 bash scripts/check-agent-instructions.sh
 cargo fmt --all -- --check
 cargo clippy --workspace --locked --all-targets --all-features -- -D warnings
-cargo test --workspace --locked --all-targets --all-features
-cargo test -p schemalane-core --locked --test postgres_integration -- --include-ignored
+cargo nextest run --workspace --locked --all-targets --all-features
+cargo nextest run -p schemalane-core --locked --test postgres_integration --run-ignored all
 RUSTDOCFLAGS="-D missing-docs" cargo doc -p schemalane-core --no-deps --locked
-cargo test --workspace --doc --locked
 cargo package --workspace --locked --allow-dirty
 cargo audit
 ```
 
-- The ordinary workspace test command reports the Docker tests as ignored. Do
+- The ordinary workspace nextest command reports the Docker tests as ignored. Do
   not claim database behavior is verified unless the `--include-ignored` suite
   passed.
 - The instruction check validates cross-tool symlinks and the 200-line

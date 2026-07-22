@@ -26,7 +26,7 @@ env:
   SCCACHE_CACHE_SIZE: 20G
 
 jobs:
-  crates-io:
+  release:
     name: Publish crates.io packages (${{ matrix.config.lane }})
     timeout-minutes: 30
     strategy:
@@ -36,22 +36,38 @@ jobs:
     runs-on: ${{ matrix.config.runner }}
     environment: crates.io
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - uses: rui314/setup-mold@9c9c13bf4c3f1adef0cc596abc155580bcb04444 # v1.1.1
-      - uses: mozilla-actions/sccache-action@1583d6b38d7be47f593cb472781bbb21cab4321e # v0.0.10
+      - uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696 # v0.0.10
         with:
           version: v0.16.0
           disable_annotations: "false"
       - uses: jdx/mise-action@dad1bfd3df957f44999b559dd69dc1671cb4e9ea # v4.2.1
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Cache Cargo registry
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry/cache
+            ~/.cargo/registry/index
+            ~/.cargo/registry/src
+            ~/.cargo/git/db
+          key: cargo-registry-${{ matrix.config.lane }}-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: cargo-registry-${{ matrix.config.lane }}-${{ runner.os }}-
+      - name: Cache Cargo target
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: target
+          key: cargo-target-${{ matrix.config.lane }}-${{ runner.os }}-${{ github.job }}-${{ hashFiles('rust-toolchain.toml', '.cargo/config.toml', '**/Cargo.toml', '**/Cargo.lock') }}-${{ github.sha }}
+          restore-keys: cargo-target-${{ matrix.config.lane }}-${{ runner.os }}-${{ github.job }}-${{ hashFiles('rust-toolchain.toml', '.cargo/config.toml', '**/Cargo.toml', '**/Cargo.lock') }}-
       - name: Verify
         run: |
           cargo fmt --all -- --check
           cargo clippy --workspace --locked --all-targets --all-features -- -D warnings
-          cargo test --workspace --locked --all-targets --all-features
+          cargo nextest run --workspace --locked --all-targets --all-features
       - name: Publish
         if: matrix.config.writer
         env:

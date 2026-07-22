@@ -5,6 +5,8 @@
 - Pin every third-party action to a full commit SHA.
 - Keep permissions least-privilege, concurrency bounded, and every job timed out.
 - Preserve identical job and step semantics across lanes.
+- The canonical Sunday parity schedule selects `both`; other automatic events
+  remain Velnor-default.
 - Keep release publishing operator-controlled and single-writer gated.
 - Keep the crates.io token scoped to the publish step.
 - Publish crates in dependency order and skip versions already published.

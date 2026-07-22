@@ -24,14 +24,14 @@ Schemalane CLI supports:
 Fast unit tests (no Docker):
 
 ```sh
-cargo test --workspace
+cargo nextest run --workspace --locked
 ```
 
 Full suite including PostgreSQL integration tests (requires a running Docker daemon;
 testcontainers starts a disposable Postgres per test):
 
 ```sh
-cargo test -p schemalane-core --test postgres_integration -- --include-ignored
+cargo nextest run -p schemalane-core --locked --test postgres_integration --run-ignored all
 ```
 
 ## Local CLI Testing

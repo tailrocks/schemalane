@@ -35,9 +35,9 @@
 ## Checks
 
 ```sh
-cargo test -p schemalane-core --locked
+cargo nextest run -p schemalane-core --locked
 RUSTDOCFLAGS="-D missing-docs" cargo doc -p schemalane-core --no-deps --locked
-cargo test -p schemalane-core --locked --test postgres_integration -- --include-ignored
+cargo nextest run -p schemalane-core --locked --test postgres_integration --run-ignored all
 ```
 
 The last command requires Docker and is the authoritative database-behavior gate.
