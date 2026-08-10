@@ -3,4 +3,5 @@
 "github:nextest-rs/nextest" = "cargo-nextest-0.9.140"
 
 [settings]
+lockfile = true
 idiomatic_version_file_enable_tools = ["rust"]
