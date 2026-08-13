@@ -5,3 +5,15 @@
 [settings]
 lockfile = true
 idiomatic_version_file_enable_tools = ["rust"]
+
+[tasks.ci]
+run = "cargo check --workspace --locked --all-targets --all-features"
+
+[tasks.test]
+run = "cargo nextest run --workspace --locked --all-features"
+
+[tasks.lint]
+run = "cargo clippy --workspace --locked --all-targets --all-features -- -D warnings"
+
+[tasks.fmt]
+run = "cargo fmt --all -- --check"
