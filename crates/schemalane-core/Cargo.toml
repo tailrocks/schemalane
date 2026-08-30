@@ -8,7 +8,7 @@ repository.workspace = true
 homepage.workspace = true
 rust-version.workspace = true
 documentation = "https://docs.rs/schemalane-core"
-readme = "../README.md"
+readme = "../../README.md"
 keywords = ["postgres", "migration", "database", "sql", "schemalane"]
 
 [lints]
