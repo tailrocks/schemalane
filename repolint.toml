@@ -1,0 +1,13 @@
+# Local cache and map sources for the adopted Workspace repository.
+
+[repo]
+tier = "workspace"
+kind = "app"
+visibility = "public"
+research = false
+
+[map.dirs]
+crates = "Rust workspace members"
+docs = "Research and supporting documentation"
+plans = "Completed direction-spike decision records"
+scripts = "Repository verification scripts"

@@ -17,12 +17,12 @@
 
 | Path | Responsibility | Local guidance |
 |---|---|---|
-| `schemalane-core/` | Migration discovery, state, history, locking, execution | `schemalane-core/AGENTS.md` |
-| `schemalane-cli/` | CLI grammar, rendering, TLS, migration-crate delegation | `schemalane-cli/AGENTS.md` |
-| `pg_query_fmt/` | PostgreSQL AST formatter, preview, highlighting | `pg_query_fmt/AGENTS.md` |
-| `schemalane-macros/` | `embed_migrations!` proc macro | `schemalane-macros/AGENTS.md` |
-| `schemalane-version/` | Shared Flyway-compatible filename/version parser | `schemalane-version/AGENTS.md` |
-| `schemalane-embed-tests/` | Unpublished compile-time fixture crate | `schemalane-embed-tests/AGENTS.md` |
+| `crates/schemalane-core/` | Migration discovery, state, history, locking, execution | `crates/schemalane-core/AGENTS.md` |
+| `crates/schemalane-cli/` | CLI grammar, rendering, TLS, migration-crate delegation | `crates/schemalane-cli/AGENTS.md` |
+| `crates/pg_query_fmt/` | PostgreSQL AST formatter, preview, highlighting | `crates/pg_query_fmt/AGENTS.md` |
+| `crates/schemalane-macros/` | `embed_migrations!` proc macro | `crates/schemalane-macros/AGENTS.md` |
+| `crates/schemalane-version/` | Shared Flyway-compatible filename/version parser | `crates/schemalane-version/AGENTS.md` |
+| `crates/schemalane-embed-tests/` | Unpublished compile-time fixture crate | `crates/schemalane-embed-tests/AGENTS.md` |
 | `.github/workflows/` | CI and manual crates.io release | `.github/AGENTS.md` |
 | `plans/designs/` | Completed direction-spike decision records | — |
 

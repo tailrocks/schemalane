@@ -8,7 +8,7 @@ repository.workspace = true
 homepage.workspace = true
 rust-version.workspace = true
 documentation = "https://docs.rs/schemalane-macros"
-readme = "../README.md"
+readme = "../../README.md"
 keywords = ["macro", "proc-macro", "migration", "postgres", "schemalane"]
 
 [lints]

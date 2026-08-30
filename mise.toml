@@ -17,3 +17,15 @@ run = "cargo clippy --workspace --locked --all-targets --all-features -- -D warn
 
 [tasks.fmt]
 run = "cargo fmt --all -- --check"
+
+[tasks.fmt-fix]
+description = "Apply Rust formatting"
+run = "cargo fmt --all"
+
+[tasks.check]
+description = "Run workspace checks"
+run = "cargo check --workspace --locked --all-targets --all-features"
+
+[tasks."release:check"]
+description = "Validate publishable crate packages"
+run = "cargo package --workspace --locked --allow-dirty"

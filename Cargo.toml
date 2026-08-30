@@ -1,17 +1,17 @@
 [workspace]
 members = [
-    "schemalane-core",
-    "schemalane-cli",
-    "schemalane-macros",
-    "schemalane-version",
-    "schemalane-embed-tests",
-    "pg_query_fmt",
+    "crates/schemalane-core",
+    "crates/schemalane-cli",
+    "crates/schemalane-macros",
+    "crates/schemalane-version",
+    "crates/schemalane-embed-tests",
+    "crates/pg_query_fmt",
 ]
 default-members = [
-    "schemalane-core",
-    "schemalane-cli",
-    "schemalane-version",
-    "pg_query_fmt",
+    "crates/schemalane-core",
+    "crates/schemalane-cli",
+    "crates/schemalane-version",
+    "crates/pg_query_fmt",
 ]
 resolver = "3"
 
@@ -29,12 +29,12 @@ pg_query = "6.1.1"
 tokio = "1.52"
 tokio-postgres = "0.7.18"
 thiserror = "2.0.18"
-schemalane-version = { version = "0.1.0", path = "schemalane-version" }
+schemalane-version = { version = "0.1.0", path = "crates/schemalane-version" }
 
-schemalane-core = { version = "0.2.0", path = "schemalane-core" }
-schemalane-cli = { version = "0.2.0", path = "schemalane-cli" }
-schemalane-macros = { version = "0.1.1", path = "schemalane-macros" }
-pg_query_fmt = { version = "0.1.4", path = "pg_query_fmt" }
+schemalane-core = { version = "0.2.0", path = "crates/schemalane-core" }
+schemalane-cli = { version = "0.2.0", path = "crates/schemalane-cli" }
+schemalane-macros = { version = "0.1.1", path = "crates/schemalane-macros" }
+pg_query_fmt = { version = "0.1.4", path = "crates/pg_query_fmt" }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
