@@ -5,7 +5,6 @@ tier = "workspace"
 kind = "app"
 visibility = "public"
 research = false
-
 [map.dirs]
 crates = "Rust workspace members"
 docs = "Research and supporting documentation"
