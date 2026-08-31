@@ -107,3 +107,8 @@ reviewing the resulting dependency/version changes.
 - Remove stale or conflicting rules when commands or architecture change.
 - Instruction prose guides agents; CI, permissions, hooks, and branch protection
   enforce guarantees.
+
+<!-- VELNOR-ACTIONS:BEGIN -->
+Repository map: README → ## Repository map
+Deferred work: repolint.toml [[deferred.item]]
+<!-- VELNOR-ACTIONS:END -->
