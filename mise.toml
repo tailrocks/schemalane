@@ -8,9 +8,13 @@ zizmor = "1.29.0"
 lockfile = true
 idiomatic_version_file_enable_tools = ["rust"]
 
-[tasks.ci]
-description = "Run the workspace CI checks"
-run = "cargo check --workspace --locked --all-targets --all-features"
+[tasks.install]
+description = "Provision every pinned tool from mise.lock"
+run = "mise install --locked"
+
+[tasks.build]
+description = "Compile every workspace target with a real codegen build"
+run = "cargo build --workspace --locked --all-targets --all-features"
 
 [tasks.test]
 description = "Run the workspace test suite"
@@ -51,3 +55,7 @@ run = "repolint map --write"
 [tasks."fleet:census"]
 description = "Print this repository's authoritative fleet census row"
 run = "printf 'repository class: code\\ntier: Workspace\\nkind: App\\nvisibility: public\\nresearch: false\\nfirst_seen: 2026-08-30\\n'"
+
+[tasks.ci]
+description = "Local aggregate of install, build, test, lint, and fmt"
+depends = ["install", "build", "test", "lint", "fmt"]
