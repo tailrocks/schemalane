@@ -37,16 +37,18 @@ pub fn embed_migrations(input: TokenStream) -> TokenStream {
 
     let manifest_dir = PathBuf::from(manifest_dir);
     let full_path = manifest_dir.join(&relative_value);
+    // Report the user-given relative path, not the absolute build path: the
+    // absolute path embeds the machine-specific target directory (mbx object
+    // cache, CARGO_TARGET_DIR overrides), which is useless to users and makes
+    // UI snapshots unreproducible across environments.
     if !full_path.exists() {
         return compile_error(format!(
-            "embed_migrations! path does not exist: {}",
-            full_path.display()
+            "embed_migrations! path does not exist: {relative_value}"
         ));
     }
     if !full_path.is_dir() {
         return compile_error(format!(
-            "embed_migrations! path is not a directory: {}",
-            full_path.display()
+            "embed_migrations! path is not a directory: {relative_value}"
         ));
     }
 
@@ -54,8 +56,7 @@ pub fn embed_migrations(input: TokenStream) -> TokenStream {
         Ok(path) => path,
         Err(err) => {
             return compile_error(format!(
-                "embed_migrations! failed to canonicalize {}: {err}",
-                full_path.display()
+                "embed_migrations! failed to canonicalize {relative_value}: {err}"
             ));
         }
     };
