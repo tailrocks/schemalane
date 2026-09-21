@@ -2,7 +2,7 @@ schema = 2
 
 [generator]
 repository = "tailrocks/schemalane"
-revision = "be61acbbbfb71db6b51337e547e39de049d4fc15"
+revision = "eed474c4a1d9b071fd1b5de00c769c8997398e5a"
 
 [workflow]
 providers = ["github-hosted"]
