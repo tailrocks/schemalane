@@ -1,0 +1,6 @@
+tree 2f772b6e10193d4e90ed4e2ec166109f0cc5d1e4
+parent 8d2952a6389c4e1dcddda85c645179f73c9cbd11
+author Alexey Zhokhov <alexey@zhokhov.com> 1772149925 +0700
+committer Alexey Zhokhov <alexey@zhokhov.com> 1772149925 +0700
+
+Add Schemalane project scaffold with CLI

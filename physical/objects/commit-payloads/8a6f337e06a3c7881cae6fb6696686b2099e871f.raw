@@ -1,0 +1,12 @@
+tree 8b6fa24d3ddc5d25f51131d70c9c3d847775764c
+parent 213f7acb848bb5a029f5af921f9194cb638d2d8b
+author Alexey Zhokhov <alexey@zhokhov.com> 1772153029 +0700
+committer Alexey Zhokhov <alexey@zhokhov.com> 1772153029 +0700
+
+Add schemalane-macros crate and init migration CLI
+
+- Add schemalane-macros crate with embed_migrations proc macro
+- Re-export embed_migrations from the main crate
+- Extend CLI with migrate init subcommand and options
+- Wire schemalane-macros as a path dependency in Cargo.toml
+- Remove the old migrations/.gitkeep placeholder

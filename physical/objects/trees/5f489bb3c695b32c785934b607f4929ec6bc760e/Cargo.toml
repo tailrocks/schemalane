@@ -1,0 +1,22 @@
+[package]
+edition = "2024"
+name = "pg_query_fmt"
+version = "0.1.3"
+description = "PostgreSQL SQL formatter powered by pg_query"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/donbeave/schemalane"
+homepage = "https://github.com/donbeave/schemalane"
+documentation = "https://docs.rs/pg_query_fmt"
+readme = "../README.md"
+keywords = ["postgres", "sql", "formatter", "pretty-print", "pg_query"]
+
+[lints]
+workspace = true
+
+[lib]
+name = "pg_query_fmt"
+path = "src/lib.rs"
+
+[dependencies]
+owo-colors = "4.3.0"
+pg_query = "6.1.1"

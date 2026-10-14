@@ -1,0 +1,11 @@
+tree 9009f84c52a7ccae7064a7c5ad2a0f0855cfcbd5
+parent 8a6f337e06a3c7881cae6fb6696686b2099e871f
+author Alexey Zhokhov <alexey@zhokhov.com> 1772153505 +0700
+committer Alexey Zhokhov <alexey@zhokhov.com> 1772153505 +0700
+
+Turn into workspace and move schemalane crate
+
+- Convert to a Cargo workspace with schemalane and schemalane-macros
+- Move crates into schemalane/ and update internal paths
+- Update README CLI examples to use cargo run -p schemalane
+- Remove the example directory and adjust tests location

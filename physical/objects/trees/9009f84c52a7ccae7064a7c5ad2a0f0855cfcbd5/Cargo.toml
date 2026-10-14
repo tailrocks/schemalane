@@ -1,0 +1,7 @@
+[workspace]
+members = [
+    "schemalane",
+    "schemalane-macros",
+]
+default-members = ["schemalane"]
+resolver = "2"

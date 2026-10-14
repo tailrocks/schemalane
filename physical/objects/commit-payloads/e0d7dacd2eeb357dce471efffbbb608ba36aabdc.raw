@@ -1,0 +1,6 @@
+tree 338aa781d3eba6e93511305eebf4fb1458984e1e
+parent 3225104e66cfb0a36cb40592d0603a540b07ac9a
+author Alexey Zhokhov <alexey@zhokhov.com> 1772211300 +0700
+committer Alexey Zhokhov <alexey@zhokhov.com> 1772211300 +0700
+
+Add .claude.json with shellfirm MCP config

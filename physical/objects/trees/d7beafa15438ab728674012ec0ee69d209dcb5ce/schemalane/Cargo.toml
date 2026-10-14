@@ -1,0 +1,39 @@
+[package]
+edition = "2024"
+name = "schemalane"
+publish = false
+rust-version = "1.85.0"
+version = "0.1.0"
+
+[lib]
+name = "schemalane"
+path = "src/lib.rs"
+
+[dependencies]
+crc32fast = "1.4.2"
+regex = "1.12.1"
+schemalane-macros = { path = "../schemalane-macros" }
+serde = { version = "1.0.228", features = ["derive"] }
+thiserror = "2.0.17"
+
+[dependencies.sea-orm]
+version = "2.0.0-rc.34"
+default-features = false
+features = [
+    "runtime-tokio-rustls",
+    "sqlx-postgres",
+    "with-chrono",
+]
+
+[dependencies.sea-orm-migration]
+version = "2.0.0-rc.34"
+default-features = false
+features = [
+    "runtime-tokio-rustls",
+    "sqlx-postgres",
+]
+
+[dev-dependencies]
+tempfile = "3.25.0"
+testcontainers-modules = { version = "0.15.0", features = ["postgres", "blocking"] }
+tokio = { version = "1.48.0", features = ["rt-multi-thread"] }

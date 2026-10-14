@@ -1,0 +1,9 @@
+tree a4657165dd8e90a565834f13663ff878fe7c4a54
+parent 7062ee6c7d222e1e2c5eaafefe07299b40d965fa
+author Alexey Zhokhov <alexey@zhokhov.com> 1779481834 +0000
+committer Alexey Zhokhov <alexey@zhokhov.com> 1779481834 +0000
+
+chore: sync standalone schemalane workspace
+
+Co-authored-by: Codex <codex@openai.com>
+Signed-off-by: Alexey Zhokhov <alexey@zhokhov.com>

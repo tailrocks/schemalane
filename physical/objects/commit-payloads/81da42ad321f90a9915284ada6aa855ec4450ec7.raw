@@ -1,0 +1,6 @@
+tree 3230d00d48661e0c6dcf9fedba52d77db177b1ef
+parent 10b1febe684420c0a4f0c3728ec0edf4c66bbd94
+author Alexey Zhokhov <alexey@zhokhov.com> 1772154130 +0700
+committer Alexey Zhokhov <alexey@zhokhov.com> 1772154130 +0700
+
+Introduce schemalane-cli crate and wire CLI

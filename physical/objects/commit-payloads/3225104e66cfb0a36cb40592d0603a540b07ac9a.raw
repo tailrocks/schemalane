@@ -1,0 +1,6 @@
+tree 1905fd7387ed0a539b66171592632cdaf18d5fc0
+parent ebabaa68fdf0d5359381f858aacdb84597407d79
+author Alexey Zhokhov <alexey@zhokhov.com> 1772155620 +0700
+committer Alexey Zhokhov <alexey@zhokhov.com> 1772155620 +0700
+
+Rename core crate to schemalane-core
