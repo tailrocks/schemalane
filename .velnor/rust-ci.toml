@@ -1,0 +1,16 @@
+# Generator input for velnor-gen. Run `velnor-gen --root . generate` after a change.
+# The repository is public: every job runs on a GitHub-hosted runner.
+runner = "ubuntu-latest"
+hosted = true
+required_check = "Required"
+default_branch = "main"
+# Few small crates: one job pays the set-up cost once.
+shape = "one-job"
+docs = "post_merge"
+
+[ci]
+skip_push_after_merge_group = true
+
+[[lint]]
+kind = "jactionlint"
+config = ".github/jactionlint.yaml"

@@ -53,6 +53,11 @@ pub enum SchemalaneError {
     /// A pending-migration gate was enabled and pending migrations exist.
     #[error("Pending migrations found ({0})")]
     PendingMigrations(usize),
+    /// A plain run was requested while deferred statements are still pending.
+    #[error(
+        "{0} deferred statement(s) are pending; run `apply_deferred` first or keep using `up_deferred`"
+    )]
+    DeferredPending(usize),
     /// An embedded migration-crate subprocess returned a nonzero exit code.
     #[error("migration crate command exited with code {code}")]
     Delegated {
@@ -73,6 +78,7 @@ impl SchemalaneError {
             Self::PendingMigrations(_) => 5,
             Self::FreshRequiresConfirm => 6,
             Self::MixedStatements { .. } => 7,
+            Self::DeferredPending(_) => 8,
             Self::Delegated { code } => *code,
             _ => 1,
         }

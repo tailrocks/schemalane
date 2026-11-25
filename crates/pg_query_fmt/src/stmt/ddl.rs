@@ -47,11 +47,7 @@ pub(crate) fn fmt_create_enum(stmt: &CreateEnumStmt) -> Result<String, FormatErr
 // ── CREATE TABLE ────────────────────────────────────────────────────────────
 
 pub(crate) fn fmt_create_table(stmt: &CreateStmt) -> Result<String, FormatError> {
-    let relation = stmt
-        .relation
-        .as_ref()
-        .map(fmt_range_var)
-        .unwrap_or_default();
+    let relation = stmt.relation.as_ref().map_or_default(fmt_range_var);
 
     let mut header = "CREATE TABLE".to_string();
     if stmt.if_not_exists {
@@ -220,7 +216,7 @@ fn fmt_table_constraint(con: &Constraint) -> Result<String, FormatError> {
         _ => {
             let node = Node::Constraint(Box::new(con.clone()));
             s = node
-                .deparse()
+                .deparse(pg_query::DeparseOptions::default())
                 .map_err(|e| FormatError::Deparse(e.to_string()))?;
         }
     }
@@ -263,11 +259,7 @@ pub(crate) fn fmt_create_foreign_table(
         FormatError::Deparse("missing base_stmt in CreateForeignTableStmt".into())
     })?;
 
-    let relation = base
-        .relation
-        .as_ref()
-        .map(fmt_range_var)
-        .unwrap_or_default();
+    let relation = base.relation.as_ref().map_or_default(fmt_range_var);
 
     let mut header = "CREATE FOREIGN TABLE".to_string();
     if base.if_not_exists {
@@ -409,11 +401,7 @@ enum AlterItem {
 }
 
 pub(crate) fn fmt_alter_table(stmt: &AlterTableStmt) -> Result<String, FormatError> {
-    let relation = stmt
-        .relation
-        .as_ref()
-        .map(fmt_range_var)
-        .unwrap_or_default();
+    let relation = stmt.relation.as_ref().map_or_default(fmt_range_var);
 
     let object_type = crate::preview::object_type_label(stmt.objtype);
     let header = format!("ALTER {object_type} {relation}");
@@ -558,7 +546,7 @@ fn fmt_alter_table_cmd(cmd: &pg_query::protobuf::AlterTableCmd) -> Result<String
                 return Ok(format!("ADD {ctext}"));
             }
             let node = Node::AlterTableCmd(Box::new(cmd.clone()));
-            node.deparse()
+            node.deparse(pg_query::DeparseOptions::default())
                 .map_err(|e| FormatError::Deparse(e.to_string()))
         }
         AlterTableType::AtValidateConstraint => Ok(format!("VALIDATE CONSTRAINT {}", cmd.name)),
@@ -590,7 +578,7 @@ fn fmt_alter_table_cmd(cmd: &pg_query::protobuf::AlterTableCmd) -> Result<String
                 return Ok(s);
             }
             let node = Node::AlterTableCmd(Box::new(cmd.clone()));
-            node.deparse()
+            node.deparse(pg_query::DeparseOptions::default())
                 .map_err(|e| FormatError::Deparse(e.to_string()))
         }
         AlterTableType::AtChangeOwner => {
@@ -609,7 +597,7 @@ fn fmt_alter_table_cmd(cmd: &pg_query::protobuf::AlterTableCmd) -> Result<String
         AlterTableType::AtNoForceRowSecurity => Ok("NO FORCE ROW LEVEL SECURITY".into()),
         _ => {
             let node = Node::AlterTableCmd(Box::new(cmd.clone()));
-            node.deparse()
+            node.deparse(pg_query::DeparseOptions::default())
                 .map_err(|e| FormatError::Deparse(e.to_string()))
         }
     }

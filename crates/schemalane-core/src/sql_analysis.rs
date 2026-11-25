@@ -24,7 +24,7 @@ pub(crate) fn parse_sql_migration(sql: &str) -> Result<Vec<ParsedSqlStatement>, 
         if trimmed.is_empty() {
             continue;
         }
-        let parsed = pg_query::parse(trimmed).map_err(|err| {
+        let parsed = pg_query::parse(trimmed, 0).map_err(|err| {
             SchemalaneError::Validation(format!("failed to parse SQL statement: {err}"))
         })?;
         let source_line = offset_to_line(sql, trimmed);

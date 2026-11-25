@@ -24,6 +24,7 @@
 
 mod checksum;
 mod config;
+mod deferred;
 mod discovery;
 mod error;
 mod execute;
@@ -38,12 +39,17 @@ mod rust_migration;
 mod sql_analysis;
 
 pub use config::SchemalaneConfig;
+pub use deferred::{
+    ApplyDeferredOptions, ApplyDeferredReport, DeferPolicy, DeferredEntry, DeferredKind,
+    DeferredReport, DeferredStatus, DeferredVerification, FkMode, VerifiedEntry,
+};
 pub use error::SchemalaneError;
 pub use init::init_migration_project;
 pub use migrator::{SchemalaneMigrator, derive_advisory_lock_id, should_fail_on_pending};
 pub use observer::{
     MigrationFailed, MigrationFinished, MigrationInfo, MigrationObserver, MigrationStarted,
-    NoopMigrationObserver, SqlStatementFailed, SqlStatementFinished, SqlStatementStarted,
+    NoopMigrationObserver, SqlStatementDeferred, SqlStatementFailed, SqlStatementFinished,
+    SqlStatementStarted,
 };
 pub use report::{
     AppliedMigration, InitReport, MigrationState, PlannedMigration, PlannedTransactionMode,

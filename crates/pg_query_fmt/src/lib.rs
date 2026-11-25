@@ -41,7 +41,7 @@ pub fn format_statement(sql: &str) -> Result<String, FormatError> {
         return Ok(String::new());
     }
 
-    let parsed = pg_query::parse(trimmed).map_err(|e| FormatError::Parse(e.to_string()))?;
+    let parsed = pg_query::parse(trimmed, 0).map_err(|e| FormatError::Parse(e.to_string()))?;
 
     let node = parsed
         .protobuf
@@ -64,7 +64,7 @@ pub fn format_statement(sql: &str) -> Result<String, FormatError> {
         Node::CreateFunctionStmt(s) => stmt::fmt_create_function(s),
         Node::CreateForeignTableStmt(s) => stmt::fmt_create_foreign_table(s),
         _ => node
-            .deparse()
+            .deparse(pg_query::DeparseOptions::default())
             .map_err(|e| FormatError::Deparse(e.to_string())),
     }
 }
@@ -90,10 +90,19 @@ pub fn format_sql(sql: &str) -> Result<String, FormatError> {
 mod tests {
     use super::*;
 
+    /// Schema-qualified, alias-insensitive relation names and full relation names, the
+    /// fingerprint behavior of libpg_query 17, so a formatter that changes a relation fails.
+    fn fingerprint_options() -> pg_query::FingerprintOptions {
+        pg_query::FingerprintOptions::RANGEVAR_PG17_COMPAT
+            | pg_query::FingerprintOptions::FULL_RELNAME
+    }
+
     fn assert_round_trips(sql: &str) {
         let formatted = format_statement(sql).expect("format");
-        let input = pg_query::fingerprint(sql).expect("fingerprint input").hex;
-        let output = pg_query::fingerprint(&formatted)
+        let input = pg_query::fingerprint(sql, 0, fingerprint_options())
+            .expect("fingerprint input")
+            .hex;
+        let output = pg_query::fingerprint(&formatted, 0, fingerprint_options())
             .unwrap_or_else(|error| {
                 panic!("formatted output failed to parse: {error}\n---\n{formatted}")
             })

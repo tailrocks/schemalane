@@ -5,7 +5,6 @@ version = "0.2.0"
 description = "Core migration engine for Schemalane PostgreSQL-first, forward-only migrations"
 license.workspace = true
 repository.workspace = true
-homepage.workspace = true
 rust-version.workspace = true
 documentation = "https://docs.rs/schemalane-core"
 readme = "../../README.md"
@@ -21,9 +20,11 @@ path = "src/lib.rs"
 [dependencies]
 crc32fast = "1.5.0"
 deadpool-postgres = { workspace = true }
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
 schemalane-macros = { workspace = true }
 schemalane-version = { workspace = true }
 serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.149"
 pg_query = { workspace = true }
 thiserror = { workspace = true }
 tokio-postgres = { workspace = true }

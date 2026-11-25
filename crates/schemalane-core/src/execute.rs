@@ -1,6 +1,8 @@
 use std::time::Instant;
 
-use tokio_postgres::{Client, Transaction};
+use tokio_postgres::{Client, GenericClient, Transaction};
+
+use crate::deferred::{Deferral, Prepared};
 
 use crate::history::HistoryWrite;
 use crate::sql_analysis::{
@@ -8,7 +10,7 @@ use crate::sql_analysis::{
 };
 use crate::{
     MigrationInfo, MigrationObserver, RustMigrationExecutor, RustTransactionMode, SchemalaneError,
-    SqlStatementFailed, SqlStatementFinished, SqlStatementStarted,
+    SqlStatementDeferred, SqlStatementFailed, SqlStatementFinished, SqlStatementStarted,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -23,6 +25,7 @@ pub(crate) async fn execute_sql_migration<O>(
     migration: &MigrationInfo,
     observer: &O,
     history_write: &HistoryWrite<'_>,
+    mut deferral: Option<&mut Deferral<'_>>,
 ) -> Result<Applied, SchemalaneError>
 where
     O: MigrationObserver + ?Sized,
@@ -34,18 +37,19 @@ where
         SqlTransactionMode::Transactional => {
             let transaction = client.transaction().await?;
             for (index, statement) in statements.iter().enumerate() {
-                if let Err(error) = execute_statement(
+                if let Err(error) = run_statement(
                     &transaction,
                     statement,
                     index,
                     total_statements,
                     migration,
                     observer,
+                    deferral.as_deref_mut(),
                 )
                 .await
                 {
                     let _ = transaction.rollback().await;
-                    return Err(SchemalaneError::Db(error));
+                    return Err(error);
                 }
             }
             history_write
@@ -61,20 +65,66 @@ where
         }
         SqlTransactionMode::NonTransactional => {
             for (index, statement) in statements.iter().enumerate() {
-                execute_statement(
-                    client,
+                run_statement(
+                    &*client,
                     statement,
                     index,
                     total_statements,
                     migration,
                     observer,
+                    deferral.as_deref_mut(),
                 )
-                .await
-                .map_err(SchemalaneError::Db)?;
+                .await?;
             }
             Ok(Applied::NeedsHistoryRow)
         }
     }
+}
+
+/// Executes one statement, or records it in the deferred set when a deferral is active.
+async fn run_statement<E, O>(
+    executor: &E,
+    statement: &ParsedSqlStatement,
+    index: usize,
+    total_statements: usize,
+    migration: &MigrationInfo,
+    observer: &O,
+    deferral: Option<&mut Deferral<'_>>,
+) -> Result<(), SchemalaneError>
+where
+    E: BatchExec + GenericClient,
+    O: MigrationObserver + ?Sized,
+{
+    let sql = match deferral {
+        Some(deferral) => match deferral
+            .prepare(executor, migration, index, statement)
+            .await?
+        {
+            Prepared::Run(sql) => sql,
+            Prepared::Deferred => {
+                observer.on_sql_statement_deferred(&SqlStatementDeferred {
+                    migration: migration.clone(),
+                    statement_index: index + 1,
+                    total_statements,
+                    statement: statement.sql.clone(),
+                    source_line: Some(statement.source_line),
+                });
+                return Ok(());
+            }
+        },
+        None => statement.sql.clone(),
+    };
+    execute_statement(
+        executor,
+        &sql,
+        statement.source_line,
+        index,
+        total_statements,
+        migration,
+        observer,
+    )
+    .await
+    .map_err(SchemalaneError::Db)
 }
 
 trait BatchExec {
@@ -95,7 +145,8 @@ impl BatchExec for Transaction<'_> {
 
 async fn execute_statement<E, O>(
     executor: &E,
-    statement: &ParsedSqlStatement,
+    sql: &str,
+    source_line: u64,
     index: usize,
     total_statements: usize,
     migration: &MigrationInfo,
@@ -105,22 +156,22 @@ where
     E: BatchExec,
     O: MigrationObserver + ?Sized,
 {
-    let source_line = Some(statement.source_line);
+    let source_line = Some(source_line);
     observer.on_sql_statement_start(&SqlStatementStarted {
         migration: migration.clone(),
         statement_index: index + 1,
         total_statements,
-        statement: statement.sql.clone(),
+        statement: sql.to_owned(),
         source_line,
     });
     let started = Instant::now();
-    match executor.batch(&statement.sql).await {
+    match executor.batch(sql).await {
         Ok(()) => {
             observer.on_sql_statement_finish(&SqlStatementFinished {
                 migration: migration.clone(),
                 statement_index: index + 1,
                 total_statements,
-                statement: statement.sql.clone(),
+                statement: sql.to_owned(),
                 execution_time_ms: millis_i32(started.elapsed().as_millis()),
                 source_line,
             });
@@ -131,7 +182,7 @@ where
                 migration: migration.clone(),
                 statement_index: index + 1,
                 total_statements,
-                statement: statement.sql.clone(),
+                statement: sql.to_owned(),
                 execution_time_ms: millis_i32(started.elapsed().as_millis()),
                 error: error.to_string(),
                 source_line,

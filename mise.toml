@@ -1,61 +1,53 @@
-[tools]
-"cargo:alint" = "0.15.2"
-"aqua:rustsec/rustsec/cargo-audit" = "0.22.2"
-"aqua:nextest-rs/nextest/cargo-nextest" = "0.9.140"
-"cargo:https://github.com/tailrocks/repolint" = "rev:df4a1011776485853b9bcd2ee32f63dca0b1003b"
-zizmor = "1.29.0"
-[settings]
-lockfile = true
-idiomatic_version_file_enable_tools = ["rust"]
+min_version = "2026.11.10"
 
-[tasks.install]
-description = "Provision every pinned tool from mise.lock"
-run = "mise install --locked"
+[tools]
+hk = "2.8.0"
+kingfisher = "2.14.0"
+betterleaks = "1.9.0"
+gitleaks = "8.30.1"
+rust = { version = "1.100.0", profile = "minimal", components = [
+  "clippy",
+  "rustfmt",
+], targets = [
+  "aarch64-unknown-linux-gnu",
+  "x86_64-unknown-linux-gnu",
+], mr_boxington = true }
+mr-boxington = "1.30.0"
+cargo-binstall = "1.26.0"
+cargo-deny = "0.20.2"
+rumdl = "0.3.0"
+# jactionlint shells out to shellcheck for `run:` steps; shellcheck also lints the repo's shell scripts.
+jactionlint = "2.3.0"
+shellcheck = "0.11.0"
+"aqua:nextest-rs/nextest/cargo-nextest" = "0.9.149"
+# pg_query (the SQL parser behind schemalane) needs a system protoc
+protoc = "36.2"
+
+[settings]
+cargo.binstall = true
+idiomatic_version_file_enable_tools = ["rust"]
+lockfile = true
+
+[wrappers.cargo]
+command = "mbx"
+env = { MBX_CARGO_SHIM_MODE = "1" }
 
 [tasks.build]
-description = "Compile every workspace target with a real codegen build"
-run = "cargo build --workspace --locked --all-targets --all-features"
+description = "Build the Rust workspace test graph"
+run = "cargo nextest list --workspace --all-targets --profile ci --list-type binaries-only --locked"
 
 [tasks.test]
-description = "Run the workspace test suite"
-run = "cargo nextest run --workspace --locked --all-features"
+description = "Test the Rust workspace (the PostgreSQL integration tests are #[ignore]d; see test-integration)"
+run = "cargo nextest run --workspace --all-targets --profile ci --no-tests=fail --locked"
+
+[tasks.test-integration]
+description = "Run the PostgreSQL integration tests (needs a Docker daemon; testcontainers starts a disposable Postgres per test)"
+run = "cargo nextest run -p schemalane-core --profile ci --locked --run-ignored ignored-only"
 
 [tasks.lint]
-description = "Run Clippy with warnings denied"
-run = "cargo clippy --workspace --locked --all-targets --all-features -- -D warnings"
+description = "Lint the Rust workspace"
+run = "cargo clippy --workspace --all-targets --locked -- -D warnings"
 
 [tasks.fmt]
 description = "Check Rust formatting"
 run = "cargo fmt --all -- --check"
-
-[tasks.fmt-fix]
-description = "Apply Rust formatting"
-run = "cargo fmt --all"
-
-[tasks.check]
-description = "Run workspace checks"
-run = "cargo check --workspace --locked --all-targets --all-features"
-
-[tasks."release:check"]
-description = "Validate publishable crate packages"
-run = "cargo package --workspace --locked --allow-dirty"
-
-[tasks."fleet:check"]
-description = "Run the fleet structure, repository-shape, and workflow security gates"
-run = [
-  "repolint check",
-  "if test -f repolint.toml && grep -q '^\\[repo\\]$' repolint.toml; then alint check --fail-on-warning; else if alint check --fail-on-warning; then :; else status=$?; case $status in 1|2) echo fleet:check-warning-alint-findings >&2;; *) exit $status;; esac; fi; fi",
-  "if test -f repolint.toml && grep -q '^\\[repo\\]$' repolint.toml; then zizmor .github/workflows; else if zizmor .github/workflows; then :; else status=$?; case $status in 11|12|13|14) echo fleet:check-warning-zizmor-findings >&2;; *) exit $status;; esac; fi; fi",
-]
-
-[tasks."fleet:map"]
-description = "Regenerate the linter-owned README repository map"
-run = "repolint map --write"
-
-[tasks."fleet:census"]
-description = "Print this repository's authoritative fleet census row"
-run = "printf 'repository class: code\\ntier: Workspace\\nkind: App\\nvisibility: public\\nresearch: false\\nfirst_seen: 2026-08-30\\n'"
-
-[tasks.ci]
-description = "Local aggregate of install, build, test, lint, and fmt"
-depends = ["install", "build", "test", "lint", "fmt"]

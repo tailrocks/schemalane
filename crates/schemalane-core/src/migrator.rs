@@ -19,6 +19,7 @@ pub fn derive_advisory_lock_id(schema: &str, history_table: &str) -> i64 {
     (ADVISORY_LOCK_NAMESPACE & !0xFFFF_FFFFi64) | low
 }
 
+use crate::deferred::{DeferPolicy, Deferral, DeferredStatus};
 use crate::execute::{Applied, execute_rust_migration, execute_sql_migration, millis_i32};
 use crate::history::latest_history_by_script;
 use crate::history::{HistoryRepository, HistoryRow, HistoryWrite};
@@ -104,18 +105,53 @@ impl SchemalaneMigrator {
     where
         O: MigrationObserver + ?Sized,
     {
+        self.run_up(pool, observer, None).await
+    }
+
+    /// Shared body of `up` and `up_deferred`; `defer` selects the deferred path.
+    pub(crate) async fn run_up<O>(
+        &self,
+        pool: &Pool,
+        observer: &O,
+        defer: Option<&DeferPolicy>,
+    ) -> Result<RunReport, SchemalaneError>
+    where
+        O: MigrationObserver + ?Sized,
+    {
         let migrations = self.discover_migrations()?;
         self.ensure_rust_executors_registered(&migrations)?;
         let (mut session, lock_id) = self.acquire_locked_session(pool).await?;
         let result = async {
             let client: &mut Client = &mut session;
             let history_repository = self.history_repository();
+            let deferred_repository = self.deferred_repository();
             self.ensure_target_schema(client).await?;
             self.set_search_path(client).await?;
             history_repository.ensure_table(client).await?;
             let installed_by = self.resolve_installed_by(client).await?;
             let history = history_repository.load(client).await?;
             Self::ensure_no_blocking_history(&migrations, &history)?;
+            let mut deferral = if let Some(policy) = defer {
+                deferred_repository.ensure_table(client).await?;
+                let pending = deferred_repository
+                    .load(client)
+                    .await?
+                    .into_iter()
+                    .filter(|entry| entry.status == DeferredStatus::Pending)
+                    .collect();
+                Some(Deferral {
+                    policy: *policy,
+                    repository: &deferred_repository,
+                    installed_by: &installed_by,
+                    pending,
+                })
+            } else {
+                let pending = deferred_repository.count_pending(client).await?;
+                if pending > 0 {
+                    return Err(SchemalaneError::DeferredPending(pending));
+                }
+                None
+            };
             observer.on_run_planned(&build_status_report(
                 &self.config.schema,
                 &self.config.history_table,
@@ -144,6 +180,7 @@ impl SchemalaneMigrator {
                 &history_repository,
                 observer,
                 ApplyOptions { skip_applied: true },
+                deferral.as_mut(),
             )
             .await
         }
@@ -276,6 +313,20 @@ impl SchemalaneMigrator {
     where
         O: MigrationObserver + ?Sized,
     {
+        self.run_fresh(pool, confirmed, observer, None).await
+    }
+
+    /// Shared body of `fresh` and `fresh_deferred`; `defer` selects the deferred path.
+    pub(crate) async fn run_fresh<O>(
+        &self,
+        pool: &Pool,
+        confirmed: bool,
+        observer: &O,
+        defer: Option<&DeferPolicy>,
+    ) -> Result<RunReport, SchemalaneError>
+    where
+        O: MigrationObserver + ?Sized,
+    {
         if !confirmed {
             return Err(SchemalaneError::FreshRequiresConfirm);
         }
@@ -287,6 +338,7 @@ impl SchemalaneMigrator {
         let result = async {
             let client: &mut Client = &mut session;
             let history_repository = self.history_repository();
+            let deferred_repository = self.deferred_repository();
             self.reset_target_schema(client).await?;
             self.set_search_path(client).await?;
             history_repository.ensure_table(client).await?;
@@ -298,6 +350,17 @@ impl SchemalaneMigrator {
             ));
 
             let installed_by = self.resolve_installed_by(client).await?;
+            let mut deferral = if let Some(policy) = defer {
+                deferred_repository.ensure_table(client).await?;
+                Some(Deferral {
+                    policy: *policy,
+                    repository: &deferred_repository,
+                    installed_by: &installed_by,
+                    pending: Vec::new(),
+                })
+            } else {
+                None
+            };
             let mut next_rank = 1;
             self.apply_all(
                 client,
@@ -310,6 +373,7 @@ impl SchemalaneMigrator {
                 ApplyOptions {
                     skip_applied: false,
                 },
+                deferral.as_mut(),
             )
             .await
         }
@@ -328,6 +392,7 @@ impl SchemalaneMigrator {
         history_repository: &HistoryRepository,
         observer: &O,
         options: ApplyOptions,
+        mut deferral: Option<&mut Deferral<'_>>,
     ) -> Result<RunReport, SchemalaneError>
     where
         O: MigrationObserver + ?Sized,
@@ -357,7 +422,13 @@ impl SchemalaneMigrator {
             let history_write =
                 Self::history_write(history_repository, migration, installed_by, *next_rank);
             let run_result = self
-                .apply_migration(client, migration, observer, &history_write)
+                .apply_migration(
+                    client,
+                    migration,
+                    observer,
+                    &history_write,
+                    deferral.as_deref_mut(),
+                )
                 .await;
             let execution_time_ms = millis_i32(started.elapsed().as_millis());
 
@@ -420,7 +491,7 @@ impl SchemalaneMigrator {
         Ok(report)
     }
 
-    async fn acquire_locked_session(
+    pub(crate) async fn acquire_locked_session(
         &self,
         pool: &Pool,
     ) -> Result<(deadpool_postgres::ClientWrapper, i64), SchemalaneError> {
@@ -437,7 +508,7 @@ impl SchemalaneMigrator {
         Ok((session, lock_id))
     }
 
-    async fn finish_locked_session<T>(
+    pub(crate) async fn finish_locked_session<T>(
         session: &Client,
         lock_id: i64,
         result: Result<T, SchemalaneError>,
@@ -507,6 +578,7 @@ impl SchemalaneMigrator {
         migration: &DiscoveredMigration,
         observer: &O,
         history_write: &HistoryWrite<'_>,
+        deferral: Option<&mut Deferral<'_>>,
     ) -> Result<Applied, SchemalaneError>
     where
         O: MigrationObserver + ?Sized,
@@ -518,8 +590,15 @@ impl SchemalaneMigrator {
                 path: _path,
                 content,
             } => {
-                execute_sql_migration(client, content, &migration_info, observer, history_write)
-                    .await
+                execute_sql_migration(
+                    client,
+                    content,
+                    &migration_info,
+                    observer,
+                    history_write,
+                    deferral,
+                )
+                .await
             }
             MigrationSource::RustFile(path) => {
                 let executor = self
@@ -581,7 +660,7 @@ impl SchemalaneMigrator {
     /// caller-configured paths), which silently hides extensions installed
     /// there — e.g. `citext` referenced as an unqualified type by tokio-postgres
     /// when binding parameters of `public.citext` columns.
-    async fn set_search_path(&self, client: &Client) -> Result<(), SchemalaneError> {
+    pub(crate) async fn set_search_path(&self, client: &Client) -> Result<(), SchemalaneError> {
         let original: String = client
             .query_one("SELECT current_setting('search_path') AS path", &[])
             .await?

@@ -1,0 +1,33 @@
+// Per-class builtin steps go in the top-level `steps` block, which hk
+// documents as the recommended place: it creates the `check`, `fix` and `pre-commit` hooks from one list. The explicit
+// `pre-commit` below keeps the check-only, no-stash hook settings and adds the staged secret scan on top of
+// those inherited steps. `pre-push` and `security-audit` are custom hooks and are declared explicitly.
+amends "package://github.com/jdx/hk/releases/download/v2.8.0/hk@2.8.0#/Config.pkl"
+import "package://github.com/jdx/hk/releases/download/v2.8.0/hk@2.8.0#/Builtins.pkl"
+jobs = 2
+fail_fast = false
+steps {
+  ["mise"] = Builtins.mise
+  ["gitleaks"] = Builtins.gitleaks
+  // Rust (add inside the top-level `steps` block)
+  ["cargo_fmt"] = Builtins.cargo_fmt
+  ["cargo_check"] = Builtins.cargo_check
+  ["cargo_clippy"] = Builtins.cargo_clippy
+  ["cargo_deny"] = Builtins.cargo_deny
+  ["rust-toolchain-mirror"] {
+    glob = List("mise.toml", "rust-toolchain.toml")
+    check = "sh scripts/check-rust-toolchain-mirror.sh"
+  }
+  ["rumdl"] = Builtins.rumdl
+  ["jactionlint"] = Builtins.jactionlint
+  ["shellcheck"] = (Builtins.shellcheck) { exclude = List(".github/**") }
+}
+hooks {
+  ["pre-commit"] { fix = false; stage = false; stash = "none"
+    steps { ["kingfisher-staged"] { check = "kingfisher scan . --staged --no-validate --redact --no-update-check" } } }
+  ["pre-push"] { steps { ["betterleaks-history"] { check = "betterleaks git . --redact" } } }
+  ["security-audit"] { steps {
+      ["kingfisher-history"] { check = "kingfisher scan . --git-history full --confidence low --no-validate --redact --no-update-check" }
+      ["betterleaks-history"] { check = "betterleaks git . --redact" }
+      ["gitleaks-history"] { check = "gitleaks git . --redact --no-banner" } } }
+}

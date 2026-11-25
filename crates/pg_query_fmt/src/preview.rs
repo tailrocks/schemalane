@@ -36,7 +36,7 @@ pub fn statement_preview(parsed: &pg_query::ParseResult) -> String {
 ///
 /// Invalid SQL falls back to the first 96 Unicode scalar values of the input.
 pub fn preview_sql(sql: &str) -> String {
-    match pg_query::parse(sql) {
+    match pg_query::parse(sql, 0) {
         Ok(parsed) => statement_preview(&parsed),
         Err(_) => sql.chars().take(96).collect(),
     }
@@ -284,7 +284,7 @@ mod tests {
     }
 
     fn preview_of(sql: &str) -> String {
-        let parsed = pg_query::parse(sql).expect("parse");
+        let parsed = pg_query::parse(sql, 0).expect("parse");
         statement_preview(&parsed)
     }
 

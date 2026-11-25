@@ -1,7 +1,7 @@
 use pg_query::protobuf::node::Node;
 use pg_query::protobuf::{
     CteMaterialize, DeleteStmt, InsertStmt, JoinType, LockClauseStrength, LockWaitPolicy,
-    OnConflictAction, SelectStmt, SetOperation, UpdateStmt,
+    OnConflictAction, ReturningClause, ReturningOptionKind, SelectStmt, SetOperation, UpdateStmt,
 };
 use std::fmt::Write;
 
@@ -12,6 +12,50 @@ use crate::expr::{
 use crate::{FormatError, INDENT};
 
 use super::node_string_list;
+
+// ── RETURNING ───────────────────────────────────────────────────────────────
+
+/// Formats `RETURNING [WITH (OLD AS a, NEW AS b)] expr, ...` (the PostgreSQL 18 shape).
+fn fmt_returning(clause: Option<&ReturningClause>) -> Result<Option<String>, FormatError> {
+    let Some(clause) = clause else {
+        return Ok(None);
+    };
+    if clause.exprs.is_empty() {
+        return Ok(None);
+    }
+    let exprs: Vec<String> = clause
+        .exprs
+        .iter()
+        .map(|n| match n.node.as_ref() {
+            Some(Node::ResTarget(rt)) => fmt_res_target_select(rt),
+            _ => fmt_node(n),
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let options: Vec<String> = clause
+        .options
+        .iter()
+        .filter_map(|n| match n.node.as_ref() {
+            Some(Node::ReturningOption(opt)) => {
+                let kind = match ReturningOptionKind::try_from(opt.option) {
+                    Ok(ReturningOptionKind::ReturningOptionOld) => "OLD",
+                    Ok(ReturningOptionKind::ReturningOptionNew) => "NEW",
+                    _ => return None,
+                };
+                Some(format!(
+                    "{kind} AS {}",
+                    crate::expr::quote_identifier(&opt.value)
+                ))
+            }
+            _ => None,
+        })
+        .collect();
+    let with = if options.is_empty() {
+        String::new()
+    } else {
+        format!("WITH ({}) ", options.join(", "))
+    };
+    Ok(Some(format!("RETURNING {with}{}", exprs.join(", "))))
+}
 
 // ── SELECT ──────────────────────────────────────────────────────────────────
 
@@ -364,11 +408,7 @@ fn fmt_common_table_expr(cte: &pg_query::protobuf::CommonTableExpr) -> Result<St
 // ── INSERT ──────────────────────────────────────────────────────────────────
 
 pub(crate) fn fmt_insert_stmt(stmt: &InsertStmt) -> Result<String, FormatError> {
-    let relation = stmt
-        .relation
-        .as_ref()
-        .map(fmt_range_var)
-        .unwrap_or_default();
+    let relation = stmt.relation.as_ref().map_or_default(fmt_range_var);
 
     let mut out = format!("INSERT INTO {relation}");
 
@@ -415,17 +455,9 @@ pub(crate) fn fmt_insert_stmt(stmt: &InsertStmt) -> Result<String, FormatError> 
     }
 
     // RETURNING
-    if !stmt.returning_list.is_empty() {
-        let ret: Vec<String> = stmt
-            .returning_list
-            .iter()
-            .map(|n| match n.node.as_ref() {
-                Some(Node::ResTarget(rt)) => fmt_res_target_select(rt),
-                _ => fmt_node(n),
-            })
-            .collect::<Result<Vec<_>, _>>()?;
+    if let Some(ret) = fmt_returning(stmt.returning_clause.as_ref())? {
         out.push('\n');
-        let _ = write!(out, "RETURNING {}", ret.join(", "));
+        out.push_str(&ret);
     }
 
     Ok(out)
@@ -477,11 +509,7 @@ fn fmt_on_conflict(oc: &pg_query::protobuf::OnConflictClause) -> Result<String, 
 // ── UPDATE ──────────────────────────────────────────────────────────────────
 
 pub(crate) fn fmt_update_stmt(stmt: &UpdateStmt) -> Result<String, FormatError> {
-    let relation = stmt
-        .relation
-        .as_ref()
-        .map(fmt_range_var)
-        .unwrap_or_default();
+    let relation = stmt.relation.as_ref().map_or_default(fmt_range_var);
 
     let mut clauses: Vec<String> = Vec::new();
     clauses.push(format!("UPDATE {relation}"));
@@ -509,16 +537,8 @@ pub(crate) fn fmt_update_stmt(stmt: &UpdateStmt) -> Result<String, FormatError> 
         clauses.push(format!("WHERE {}", fmt_node(wc)?));
     }
 
-    if !stmt.returning_list.is_empty() {
-        let ret: Vec<String> = stmt
-            .returning_list
-            .iter()
-            .map(|n| match n.node.as_ref() {
-                Some(Node::ResTarget(rt)) => fmt_res_target_select(rt),
-                _ => fmt_node(n),
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        clauses.push(format!("RETURNING {}", ret.join(", ")));
+    if let Some(ret) = fmt_returning(stmt.returning_clause.as_ref())? {
+        clauses.push(ret);
     }
 
     Ok(clauses.join("\n"))
@@ -527,11 +547,7 @@ pub(crate) fn fmt_update_stmt(stmt: &UpdateStmt) -> Result<String, FormatError> 
 // ── DELETE ──────────────────────────────────────────────────────────────────
 
 pub(crate) fn fmt_delete_stmt(stmt: &DeleteStmt) -> Result<String, FormatError> {
-    let relation = stmt
-        .relation
-        .as_ref()
-        .map(fmt_range_var)
-        .unwrap_or_default();
+    let relation = stmt.relation.as_ref().map_or_default(fmt_range_var);
 
     let mut clauses: Vec<String> = Vec::new();
     clauses.push(format!("DELETE FROM {relation}"));
@@ -549,16 +565,8 @@ pub(crate) fn fmt_delete_stmt(stmt: &DeleteStmt) -> Result<String, FormatError> 
         clauses.push(format!("WHERE {}", fmt_node(wc)?));
     }
 
-    if !stmt.returning_list.is_empty() {
-        let ret: Vec<String> = stmt
-            .returning_list
-            .iter()
-            .map(|n| match n.node.as_ref() {
-                Some(Node::ResTarget(rt)) => fmt_res_target_select(rt),
-                _ => fmt_node(n),
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        clauses.push(format!("RETURNING {}", ret.join(", ")));
+    if let Some(ret) = fmt_returning(stmt.returning_clause.as_ref())? {
+        clauses.push(ret);
     }
 
     Ok(clauses.join("\n"))

@@ -5,7 +5,6 @@ version = "0.1.4"
 description = "PostgreSQL SQL formatter powered by pg_query"
 license.workspace = true
 repository.workspace = true
-homepage.workspace = true
 rust-version.workspace = true
 documentation = "https://docs.rs/pg_query_fmt"
 readme = "README.md"

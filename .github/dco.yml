@@ -1,0 +1,3 @@
+# DCO sign-off policy (repository-owned).
+allowRemediationCommits:
+  individual: true
