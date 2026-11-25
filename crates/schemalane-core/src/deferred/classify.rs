@@ -4,7 +4,7 @@
 use pg_query::NodeEnum;
 use pg_query::protobuf::{
     AlterTableCmd, AlterTableStmt, AlterTableType, ColumnDef, ConstrType, Constraint, CreateStmt,
-    IndexStmt, Node, ObjectType, RangeVar,
+    DropBehavior, IndexStmt, Node, ObjectType, RangeVar,
 };
 
 use super::{DeferPolicy, DeferredEntry, DeferredKind};
@@ -20,6 +20,7 @@ pub(crate) struct NewEntry {
     pub(crate) referenced_relation: Option<String>,
     pub(crate) object_name: Option<String>,
     pub(crate) sql: String,
+    pub(crate) idents: Vec<String>,
 }
 
 /// Result of classifying one migration statement.
@@ -44,7 +45,7 @@ fn internal(error: &pg_query::Error) -> SchemalaneError {
     SchemalaneError::Internal(format!("failed to deparse a deferred statement: {error}"))
 }
 
-fn deparse(node: NodeEnum) -> Result<String, SchemalaneError> {
+fn deparse(node: &NodeEnum) -> Result<String, SchemalaneError> {
     node.deparse(pg_query::DeparseOptions::default())
         .map_err(|error| internal(&error))
 }
@@ -65,7 +66,7 @@ fn non_empty(value: &str) -> Option<String> {
 /// Classifies one parsed migration statement under `policy`.
 pub(crate) fn classify(
     statement: &ParsedSqlStatement,
-    policy: &DeferPolicy,
+    policy: DeferPolicy,
 ) -> Result<Classified, SchemalaneError> {
     match statement.node.as_ref().and_then(|node| node.node.as_ref()) {
         Some(NodeEnum::IndexStmt(index)) => Ok(classify_index(statement, index, policy)),
@@ -78,7 +79,7 @@ pub(crate) fn classify(
 fn classify_index(
     statement: &ParsedSqlStatement,
     index: &IndexStmt,
-    policy: &DeferPolicy,
+    policy: DeferPolicy,
 ) -> Classified {
     let wanted = if index.unique {
         policy.unique_indexes
@@ -106,6 +107,7 @@ fn classify_index(
             referenced_relation: None,
             object_name: non_empty(&index.idxname),
             sql: statement.sql.clone(),
+            idents: idents_in(&NodeEnum::IndexStmt(Box::new(index.clone()))),
         }],
     }
 }
@@ -124,6 +126,7 @@ fn foreign_key(node: &Node) -> Option<&Constraint> {
 fn add_constraint_cmd(constraint: Constraint) -> Node {
     wrap(NodeEnum::AlterTableCmd(Box::new(AlterTableCmd {
         subtype: AlterTableType::AtAddConstraint as i32,
+        behavior: DropBehavior::DropRestrict as i32,
         def: Some(Box::new(wrap(NodeEnum::Constraint(Box::new(constraint))))),
         ..AlterTableCmd::default()
     })))
@@ -134,7 +137,7 @@ fn alter_table_sql(
     cmds: Vec<Node>,
     missing_ok: bool,
 ) -> Result<String, SchemalaneError> {
-    deparse(NodeEnum::AlterTableStmt(AlterTableStmt {
+    deparse(&NodeEnum::AlterTableStmt(AlterTableStmt {
         relation: Some(relation.clone()),
         cmds,
         objtype: ObjectType::ObjectTable as i32,
@@ -158,6 +161,7 @@ fn fk_entry(
             .as_ref()
             .map(|pktable| pktable.relname.clone()),
         object_name: non_empty(&constraint.conname),
+        idents: idents_in(&NodeEnum::Constraint(Box::new(constraint.clone()))),
         sql: alter_table_sql(relation, vec![cmd], missing_ok)?,
     })
 }
@@ -185,7 +189,7 @@ fn take_column_foreign_keys(column: &mut ColumnDef) -> Vec<Constraint> {
 fn classify_alter_table(
     statement: &ParsedSqlStatement,
     alter: &AlterTableStmt,
-    policy: &DeferPolicy,
+    policy: DeferPolicy,
 ) -> Result<Classified, SchemalaneError> {
     let Some(relation) = alter.relation.as_ref() else {
         return Ok(Classified::passthrough(statement));
@@ -247,7 +251,7 @@ fn classify_alter_table(
 fn classify_create_table(
     statement: &ParsedSqlStatement,
     create: &CreateStmt,
-    policy: &DeferPolicy,
+    policy: DeferPolicy,
 ) -> Result<Classified, SchemalaneError> {
     let Some(relation) = create.relation.as_ref() else {
         return Ok(Classified::passthrough(statement));
@@ -290,7 +294,7 @@ fn classify_create_table(
         deferred.push(fk_entry(relation, &constraint, cmd, false)?);
     }
     Ok(Classified {
-        run: Some(deparse(NodeEnum::CreateStmt(stripped))?),
+        run: Some(deparse(&NodeEnum::CreateStmt(stripped))?),
         deferred,
     })
 }
@@ -351,16 +355,36 @@ const fn is_opaque(node: &NodeEnum) -> bool {
     )
 }
 
-fn names_in(node: &NodeEnum) -> Vec<String> {
-    use pg_query::NodeRef;
-    node.nodes()
-        .into_iter()
-        .filter_map(|(node, ..)| match node {
-            NodeRef::RangeVar(range_var) => Some(range_var.relname.clone()),
-            NodeRef::String(string) => Some(string.sval.clone()),
-            _ => None,
-        })
-        .collect()
+/// Collects every identifier mentioned anywhere in a statement: relation, column, index and
+/// constraint names (`DROP`, `ALTER ... RENAME`, `COMMENT ON`, column lists, ...). The result
+/// is a superset; it is only used to decide whether two statements may interact.
+fn idents_in(node: &NodeEnum) -> Vec<String> {
+    const KEYS: [&str; 6] = ["sval", "relname", "name", "colname", "idxname", "conname"];
+    fn walk(value: &serde_json::Value, names: &mut Vec<String>) {
+        match value {
+            serde_json::Value::Object(map) => {
+                for (key, child) in map {
+                    match child {
+                        serde_json::Value::String(name)
+                            if KEYS.contains(&key.as_str()) && !name.is_empty() =>
+                        {
+                            names.push(name.clone());
+                        }
+                        _ => walk(child, names),
+                    }
+                }
+            }
+            serde_json::Value::Array(items) => items.iter().for_each(|item| walk(item, names)),
+            _ => {}
+        }
+    }
+    let mut names = Vec::new();
+    if let Ok(value) = serde_json::to_value(node) {
+        walk(&value, &mut names);
+    }
+    names.sort();
+    names.dedup();
+    names
 }
 
 fn dml_target(node: &NodeEnum) -> Option<&str> {
@@ -392,11 +416,96 @@ pub(crate) fn entries_to_flush<'a>(
     if is_additive(node) {
         return Vec::new();
     }
-    let names = names_in(node);
+    match node {
+        NodeEnum::AlterTableStmt(alter) => flush_for_alter_table(alter, pending),
+        NodeEnum::RenameStmt(rename) if rename.rename_type == ObjectType::ObjectColumn as i32 => {
+            let relation = rename
+                .relation
+                .as_ref()
+                .map(|relation| relation.relname.as_str());
+            relation.map_or_else(Vec::new, |relation| {
+                entries_using_column(pending, relation, &rename.subname)
+            })
+        }
+        _ => {
+            let names = idents_in(node);
+            pending
+                .iter()
+                .filter(|entry| entry_names(entry).any(|name| names.iter().any(|n| n == name)))
+                .collect()
+        }
+    }
+}
+
+/// Entries on or referencing `relation` that mention `column`.
+fn entries_using_column<'a>(
+    pending: &'a [DeferredEntry],
+    relation: &str,
+    column: &str,
+) -> Vec<&'a DeferredEntry> {
     pending
         .iter()
-        .filter(|entry| entry_names(entry).any(|name| names.iter().any(|n| n == name)))
+        .filter(|entry| {
+            (entry.relation_name == relation
+                || entry.referenced_relation.as_deref() == Some(relation))
+                && entry.idents.iter().any(|ident| ident == column)
+        })
         .collect()
+}
+
+/// `ALTER TABLE` commands are matched one by one: dropping or retyping a column only affects
+/// the entries that mention it, dropping a constraint only the entry of that name, and any
+/// other non-additive command conservatively every entry of the table.
+fn flush_for_alter_table<'a>(
+    alter: &AlterTableStmt,
+    pending: &'a [DeferredEntry],
+) -> Vec<&'a DeferredEntry> {
+    let Some(relation) = alter
+        .relation
+        .as_ref()
+        .map(|relation| relation.relname.as_str())
+    else {
+        return pending.iter().collect();
+    };
+    let mut due: Vec<&DeferredEntry> = Vec::new();
+    for cmd in &alter.cmds {
+        let Some(NodeEnum::AlterTableCmd(cmd)) = cmd.node.as_ref() else {
+            continue;
+        };
+        if is_additive_alter_cmd(cmd.subtype) {
+            continue;
+        }
+        let is = |kind: AlterTableType| kind as i32 == cmd.subtype;
+        let matched: Vec<&DeferredEntry> = if is(AlterTableType::AtDropColumn)
+            || is(AlterTableType::AtAlterColumnType)
+            || is(AlterTableType::AtSetExpression)
+            || is(AlterTableType::AtDropExpression)
+        {
+            entries_using_column(pending, relation, &cmd.name)
+        } else if is(AlterTableType::AtDropConstraint) || is(AlterTableType::AtAlterConstraint) {
+            pending
+                .iter()
+                .filter(|entry| {
+                    entry.relation_name == relation
+                        && entry_names(entry).any(|name| name == cmd.name)
+                })
+                .collect()
+        } else {
+            pending
+                .iter()
+                .filter(|entry| {
+                    entry.relation_name == relation
+                        || entry.referenced_relation.as_deref() == Some(relation)
+                })
+                .collect()
+        };
+        for entry in matched {
+            if !due.iter().any(|existing| existing.seq == entry.seq) {
+                due.push(entry);
+            }
+        }
+    }
+    due
 }
 
 fn entry_names(entry: &DeferredEntry) -> impl Iterator<Item = &str> {
@@ -438,7 +547,7 @@ mod tests {
     use crate::deferred::DeferredStatus;
     use crate::sql_analysis::parse_sql_migration;
 
-    fn classify_sql(sql: &str, policy: &DeferPolicy) -> Classified {
+    fn classify_sql(sql: &str, policy: DeferPolicy) -> Classified {
         let statements = parse_sql_migration(sql).expect("parse");
         assert_eq!(statements.len(), 1);
         classify(&statements[0], policy).expect("classify")
@@ -466,6 +575,7 @@ mod tests {
             applied_on: None,
             execution_time_ms: None,
             flushed: false,
+            idents: vec![relation.to_owned(), "a".to_owned()],
         }
     }
 
@@ -481,7 +591,7 @@ mod tests {
     #[test]
     fn defers_secondary_index_verbatim() {
         let sql = "CREATE INDEX idx_a ON t (a) WHERE a > 1";
-        let classified = classify_sql(sql, &default_policy());
+        let classified = classify_sql(sql, default_policy());
         assert_eq!(classified.run, None);
         assert_eq!(classified.deferred.len(), 1);
         let entry = &classified.deferred[0];
@@ -494,11 +604,11 @@ mod tests {
     #[test]
     fn unique_index_is_kept_unless_policy_asks() {
         let sql = "CREATE UNIQUE INDEX u ON t (a)";
-        let kept = classify_sql(sql, &default_policy());
+        let kept = classify_sql(sql, default_policy());
         assert_eq!(kept.run.as_deref(), Some(sql));
-        assert!(kept.deferred.is_empty());
+        assert_eq!(kept.deferred.len(), 0);
         let policy = default_policy().with_unique_indexes(true);
-        let deferred = classify_sql(sql, &policy);
+        let deferred = classify_sql(sql, policy);
         assert_eq!(deferred.deferred[0].kind, DeferredKind::UniqueIndex);
     }
 
@@ -510,7 +620,7 @@ mod tests {
             "ALTER TABLE t ADD COLUMN b int",
             "ALTER TABLE t ADD CONSTRAINT c CHECK (a > 0)",
         ] {
-            let classified = classify_sql(sql, &default_policy());
+            let classified = classify_sql(sql, default_policy());
             assert_eq!(classified.run.as_deref(), Some(sql), "{sql}");
             assert!(classified.deferred.is_empty(), "{sql}");
         }
@@ -520,7 +630,7 @@ mod tests {
     fn defers_alter_table_foreign_key() {
         let classified = classify_sql(
             "ALTER TABLE child ADD CONSTRAINT child_parent_fk FOREIGN KEY (parent_id) REFERENCES parent (id) ON DELETE CASCADE",
-            &default_policy(),
+            default_policy(),
         );
         assert_eq!(classified.run, None);
         let entry = &classified.deferred[0];
@@ -536,7 +646,7 @@ mod tests {
     fn alter_table_keeps_non_foreign_key_commands() {
         let classified = classify_sql(
             "ALTER TABLE child ADD COLUMN note text, ADD FOREIGN KEY (parent_id) REFERENCES parent (id)",
-            &default_policy(),
+            default_policy(),
         );
         let run = classified.run.expect("remaining command runs");
         assert!(run.contains("ADD COLUMN note"), "{run}");
@@ -548,28 +658,39 @@ mod tests {
     fn strips_inline_foreign_keys_from_create_table() {
         let classified = classify_sql(
             "CREATE TABLE child (id int PRIMARY KEY, parent_id int REFERENCES parent (id), other_id int, FOREIGN KEY (other_id) REFERENCES other (id))",
-            &default_policy(),
+            default_policy(),
         );
         let run = classified.run.expect("table is still created");
         assert!(run.contains("PRIMARY KEY"), "{run}");
         assert!(!run.contains("REFERENCES"), "{run}");
         assert_eq!(classified.deferred.len(), 2);
         let first = &classified.deferred[0];
-        assert!(first.sql.contains("FOREIGN KEY (parent_id)"), "{}", first.sql);
+        assert!(
+            first.sql.contains("FOREIGN KEY (parent_id)"),
+            "{}",
+            first.sql
+        );
         assert_eq!(first.referenced_relation.as_deref(), Some("parent"));
-        assert_eq!(classified.deferred[1].referenced_relation.as_deref(), Some("other"));
+        assert_eq!(
+            classified.deferred[1].referenced_relation.as_deref(),
+            Some("other")
+        );
     }
 
     #[test]
     fn strips_add_column_foreign_key() {
         let classified = classify_sql(
             "ALTER TABLE child ADD COLUMN parent_id int REFERENCES parent (id)",
-            &default_policy(),
+            default_policy(),
         );
         let run = classified.run.expect("column is still added");
         assert!(run.contains("ADD COLUMN parent_id"), "{run}");
         assert!(!run.contains("REFERENCES"), "{run}");
-        assert!(classified.deferred[0].sql.contains("FOREIGN KEY (parent_id)"));
+        assert!(
+            classified.deferred[0]
+                .sql
+                .contains("FOREIGN KEY (parent_id)")
+        );
     }
 
     #[test]
@@ -578,9 +699,9 @@ mod tests {
             "CREATE TABLE IF NOT EXISTS c (p int REFERENCES parent (id))",
             "CREATE TEMP TABLE c (p int REFERENCES parent (id))",
         ] {
-            let classified = classify_sql(sql, &default_policy());
+            let classified = classify_sql(sql, default_policy());
             assert_eq!(classified.run.as_deref(), Some(sql));
-            assert!(classified.deferred.is_empty());
+            assert_eq!(classified.deferred.len(), 0);
         }
     }
 
@@ -591,9 +712,9 @@ mod tests {
             "CREATE INDEX i ON t (a)",
             "ALTER TABLE c ADD FOREIGN KEY (p) REFERENCES parent (id)",
         ] {
-            let classified = classify_sql(sql, &policy);
+            let classified = classify_sql(sql, policy);
             assert_eq!(classified.run.as_deref(), Some(sql));
-            assert!(classified.deferred.is_empty());
+            assert_eq!(classified.deferred.len(), 0);
         }
     }
 
@@ -612,10 +733,14 @@ mod tests {
         assert_eq!(flush("DROP INDEX idx_t_a"), ["t"]);
         assert_eq!(flush("ALTER INDEX idx_other RENAME TO idx_o2"), ["other"]);
         assert_eq!(flush("ALTER TABLE t DROP COLUMN a"), ["t"]);
+        assert_eq!(flush("ALTER TABLE t DROP COLUMN unrelated").len(), 0);
+        assert_eq!(flush("ALTER TABLE t RENAME COLUMN a TO b"), ["t"]);
+        assert_eq!(flush("ALTER TABLE t RENAME COLUMN z TO y").len(), 0);
+        assert_eq!(flush("ALTER TABLE t OWNER TO someone"), ["t"]);
         assert_eq!(flush("ALTER TABLE t ALTER COLUMN a TYPE bigint"), ["t"]);
         assert_eq!(flush("DROP TABLE t"), ["t"]);
         assert_eq!(flush("ALTER TABLE t RENAME TO t2"), ["t"]);
-        assert!(flush("DROP TABLE unrelated").is_empty());
+        assert_eq!(flush("DROP TABLE unrelated").len(), 0);
         assert_eq!(flush("DO $$ BEGIN PERFORM 1; END $$").len(), 2);
     }
 

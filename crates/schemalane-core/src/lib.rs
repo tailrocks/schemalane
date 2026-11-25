@@ -48,7 +48,8 @@ pub use init::init_migration_project;
 pub use migrator::{SchemalaneMigrator, derive_advisory_lock_id, should_fail_on_pending};
 pub use observer::{
     MigrationFailed, MigrationFinished, MigrationInfo, MigrationObserver, MigrationStarted,
-    NoopMigrationObserver, SqlStatementDeferred, SqlStatementFailed, SqlStatementFinished, SqlStatementStarted,
+    NoopMigrationObserver, SqlStatementDeferred, SqlStatementFailed, SqlStatementFinished,
+    SqlStatementStarted,
 };
 pub use report::{
     AppliedMigration, InitReport, MigrationState, PlannedMigration, PlannedTransactionMode,

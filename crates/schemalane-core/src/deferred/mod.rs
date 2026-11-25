@@ -14,7 +14,7 @@ mod store;
 
 use serde::Serialize;
 
-pub(crate) use classify::{Classified, classify, entries_to_flush};
+pub(crate) use classify::entries_to_flush;
 pub(crate) use run::{Deferral, Prepared};
 pub(crate) use store::DeferredRepository;
 
@@ -183,6 +183,9 @@ pub struct DeferredEntry {
     pub execution_time_ms: Option<i32>,
     /// A later migration forced the statement to run during `up_deferred`.
     pub flushed: bool,
+    /// Every identifier the statement mentions (tables, columns, index and constraint
+    /// names); used to decide whether a later statement touches the object.
+    pub idents: Vec<String>,
 }
 
 impl DeferredEntry {
@@ -265,7 +268,11 @@ impl ApplyDeferredOptions {
 
     /// Adds a session setting applied to every connection that builds objects.
     #[must_use]
-    pub fn with_session_setting(mut self, name: impl Into<String>, value: impl Into<String>) -> Self {
+    pub fn with_session_setting(
+        mut self,
+        name: impl Into<String>,
+        value: impl Into<String>,
+    ) -> Self {
         self.session_settings.push((name.into(), value.into()));
         self
     }

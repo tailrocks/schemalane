@@ -14,7 +14,7 @@ pub(crate) struct DeferredRepository {
 }
 
 impl DeferredRepository {
-    const COLUMNS: &'static str = "\"seq\", \"version\", \"script\", \"statement_ordinal\", \"item_ordinal\", \"kind\", \"relation_schema\", \"relation_name\", \"referenced_relation\", \"object_name\", \"resolved_name\", \"sql\", \"status\", \"applied_on\"::text AS \"applied_on\", \"execution_time\", \"flushed\"";
+    const COLUMNS: &'static str = "\"seq\", \"version\", \"script\", \"statement_ordinal\", \"item_ordinal\", \"kind\", \"relation_schema\", \"relation_name\", \"referenced_relation\", \"object_name\", \"resolved_name\", \"sql\", \"status\", \"applied_on\"::text AS \"applied_on\", \"execution_time\", \"flushed\", \"idents\"";
 
     pub(crate) fn new(schema: &str, history_table: &str) -> Self {
         let table = format!("{history_table}_deferred");
@@ -49,6 +49,7 @@ CREATE TABLE IF NOT EXISTS {table} (\
 \"applied_on\" TIMESTAMP,\
 \"execution_time\" INTEGER,\
 \"flushed\" BOOLEAN NOT NULL DEFAULT FALSE,\
+\"idents\" TEXT[] NOT NULL DEFAULT '{}',\
 CONSTRAINT {pk} PRIMARY KEY (\"seq\"),\
 CONSTRAINT {origin} UNIQUE (\"script\", \"statement_ordinal\", \"item_ordinal\")\
 )",
@@ -60,10 +61,13 @@ CONSTRAINT {origin} UNIQUE (\"script\", \"statement_ordinal\", \"item_ordinal\")
         Ok(())
     }
 
-    pub(crate) async fn exists(&self, client: &impl GenericClient) -> Result<bool, SchemalaneError> {
+    pub(crate) async fn exists(
+        &self,
+        client: &impl GenericClient,
+    ) -> Result<bool, SchemalaneError> {
         let row = client
             .query_one(
-                "SELECT to_regclass($1) IS NOT NULL AS exists",
+                "SELECT to_regclass($1::text) IS NOT NULL AS exists",
                 &[&self.qualified],
             )
             .await?;
@@ -110,7 +114,7 @@ CONSTRAINT {origin} UNIQUE (\"script\", \"statement_ordinal\", \"item_ordinal\")
         entry: &NewEntry,
     ) -> Result<(), SchemalaneError> {
         let sql = format!(
-            "INSERT INTO {} (\"version\", \"script\", \"statement_ordinal\", \"item_ordinal\", \"kind\", \"relation_schema\", \"relation_name\", \"referenced_relation\", \"object_name\", \"sql\", \"installed_by\") VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) ON CONFLICT (\"script\", \"statement_ordinal\", \"item_ordinal\") DO NOTHING",
+            "INSERT INTO {} (\"version\", \"script\", \"statement_ordinal\", \"item_ordinal\", \"kind\", \"relation_schema\", \"relation_name\", \"referenced_relation\", \"object_name\", \"sql\", \"installed_by\", \"idents\") VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) ON CONFLICT (\"script\", \"statement_ordinal\", \"item_ordinal\") DO NOTHING",
             self.qualified
         );
         let kind = entry.kind.as_str();
@@ -129,6 +133,7 @@ CONSTRAINT {origin} UNIQUE (\"script\", \"statement_ordinal\", \"item_ordinal\")
                     &entry.object_name,
                     &entry.sql,
                     &origin.installed_by,
+                    &entry.idents,
                 ],
             )
             .await?;
@@ -183,5 +188,6 @@ fn entry_from_row(row: &Row) -> Result<DeferredEntry, SchemalaneError> {
         applied_on: row.get("applied_on"),
         execution_time_ms: row.get("execution_time"),
         flushed: row.get("flushed"),
+        idents: row.get("idents"),
     })
 }

@@ -189,18 +189,21 @@ impl SchemalaneMigrator {
     /// valid (`indisvalid`/`indisready` for indexes, `convalidated` for foreign keys).
     /// Pending entries make the result not `ok`. Entries a later migration forced into
     /// place, which that migration may have dropped again, are reported but not required.
-    pub async fn verify_deferred(&self, pool: &Pool) -> Result<DeferredVerification, SchemalaneError> {
+    pub async fn verify_deferred(
+        &self,
+        pool: &Pool,
+    ) -> Result<DeferredVerification, SchemalaneError> {
         let client = pool.get().await?;
         let entries = self.deferred_repository().load(&**client).await?;
         let mut verified = Vec::with_capacity(entries.len());
         let mut ok = true;
         for entry in entries {
             let (exists, valid) = if entry.status == DeferredStatus::Applied {
-                self.check_catalog(&client, &entry).await?
+                self.check_catalog(&**client, &entry).await?
             } else {
                 (false, false)
             };
-            if !entry.flushed && !(exists && valid) {
+            if !(entry.flushed || exists && valid) {
                 ok = false;
             }
             verified.push(VerifiedEntry {

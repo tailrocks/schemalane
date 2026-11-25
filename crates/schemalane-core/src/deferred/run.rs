@@ -36,7 +36,7 @@ pub(crate) enum Prepared {
 
 /// Deferral state of one `up_deferred` run.
 pub(crate) struct Deferral<'a> {
-    pub(crate) policy: &'a DeferPolicy,
+    pub(crate) policy: DeferPolicy,
     pub(crate) repository: &'a DeferredRepository,
     pub(crate) installed_by: &'a str,
     pub(crate) pending: Vec<DeferredEntry>,
@@ -94,13 +94,21 @@ impl Deferral<'_> {
 fn relation_expression(entry: &DeferredEntry) -> String {
     entry.relation_schema.as_ref().map_or_else(
         || quote_ident(&entry.relation_name),
-        |schema| format!("{}.{}", quote_ident(schema), quote_ident(&entry.relation_name)),
+        |schema| {
+            format!(
+                "{}.{}",
+                quote_ident(schema),
+                quote_ident(&entry.relation_name)
+            )
+        },
     )
 }
 
 fn parse_statement(sql: &str) -> Result<NodeEnum, SchemalaneError> {
     pg_query::parse(sql, 0)
-        .map_err(|error| SchemalaneError::Internal(format!("deferred statement does not parse: {error}")))?
+        .map_err(|error| {
+            SchemalaneError::Internal(format!("deferred statement does not parse: {error}"))
+        })?
         .protobuf
         .stmts
         .into_iter()
@@ -110,9 +118,11 @@ fn parse_statement(sql: &str) -> Result<NodeEnum, SchemalaneError> {
         .ok_or_else(|| SchemalaneError::Internal("deferred statement is empty".to_owned()))
 }
 
-fn deparse(node: NodeEnum) -> Result<String, SchemalaneError> {
+fn deparse(node: &NodeEnum) -> Result<String, SchemalaneError> {
     node.deparse(pg_query::DeparseOptions::default())
-        .map_err(|error| SchemalaneError::Internal(format!("failed to deparse a deferred statement: {error}")))
+        .map_err(|error| {
+            SchemalaneError::Internal(format!("failed to deparse a deferred statement: {error}"))
+        })
 }
 
 /// Returns `sql` with `CONCURRENTLY` set as requested; the original text when it already is.
@@ -126,7 +136,7 @@ pub(crate) fn index_sql(sql: &str, concurrently: bool) -> Result<String, Schemal
         return Ok(sql.to_owned());
     }
     index.concurrent = concurrently;
-    deparse(NodeEnum::IndexStmt(index))
+    deparse(&NodeEnum::IndexStmt(index))
 }
 
 /// Returns the `NOT VALID` form of a foreign-key statement and whether it was already so.
@@ -149,7 +159,7 @@ pub(crate) fn fk_not_valid_sql(sql: &str) -> Result<(String, bool), SchemalaneEr
         was_not_valid |= constraint.skip_validation;
         constraint.skip_validation = true;
     }
-    Ok((deparse(NodeEnum::AlterTableStmt(alter))?, was_not_valid))
+    Ok((deparse(&NodeEnum::AlterTableStmt(alter))?, was_not_valid))
 }
 
 async fn newest_index_name(

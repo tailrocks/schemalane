@@ -2479,6 +2479,7 @@ dependencies = [
  "schemalane-macros",
  "schemalane-version",
  "serde",
+ "serde_json",
  "tempfile",
  "testcontainers-modules",
  "thiserror 2.0.21",

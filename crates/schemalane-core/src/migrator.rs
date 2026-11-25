@@ -131,29 +131,26 @@ impl SchemalaneMigrator {
             let installed_by = self.resolve_installed_by(client).await?;
             let history = history_repository.load(client).await?;
             Self::ensure_no_blocking_history(&migrations, &history)?;
-            let mut deferral = match defer {
-                Some(policy) => {
-                    deferred_repository.ensure_table(client).await?;
-                    let pending = deferred_repository
-                        .load(client)
-                        .await?
-                        .into_iter()
-                        .filter(|entry| entry.status == DeferredStatus::Pending)
-                        .collect();
-                    Some(Deferral {
-                        policy,
-                        repository: &deferred_repository,
-                        installed_by: &installed_by,
-                        pending,
-                    })
+            let mut deferral = if let Some(policy) = defer {
+                deferred_repository.ensure_table(client).await?;
+                let pending = deferred_repository
+                    .load(client)
+                    .await?
+                    .into_iter()
+                    .filter(|entry| entry.status == DeferredStatus::Pending)
+                    .collect();
+                Some(Deferral {
+                    policy: *policy,
+                    repository: &deferred_repository,
+                    installed_by: &installed_by,
+                    pending,
+                })
+            } else {
+                let pending = deferred_repository.count_pending(client).await?;
+                if pending > 0 {
+                    return Err(SchemalaneError::DeferredPending(pending));
                 }
-                None => {
-                    let pending = deferred_repository.count_pending(client).await?;
-                    if pending > 0 {
-                        return Err(SchemalaneError::DeferredPending(pending));
-                    }
-                    None
-                }
+                None
             };
             observer.on_run_planned(&build_status_report(
                 &self.config.schema,
@@ -353,17 +350,16 @@ impl SchemalaneMigrator {
             ));
 
             let installed_by = self.resolve_installed_by(client).await?;
-            let mut deferral = match defer {
-                Some(policy) => {
-                    deferred_repository.ensure_table(client).await?;
-                    Some(Deferral {
-                        policy,
-                        repository: &deferred_repository,
-                        installed_by: &installed_by,
-                        pending: Vec::new(),
-                    })
-                }
-                None => None,
+            let mut deferral = if let Some(policy) = defer {
+                deferred_repository.ensure_table(client).await?;
+                Some(Deferral {
+                    policy: *policy,
+                    repository: &deferred_repository,
+                    installed_by: &installed_by,
+                    pending: Vec::new(),
+                })
+            } else {
+                None
             };
             let mut next_rank = 1;
             self.apply_all(
@@ -495,7 +491,7 @@ impl SchemalaneMigrator {
         Ok(report)
     }
 
-    async fn acquire_locked_session(
+    pub(crate) async fn acquire_locked_session(
         &self,
         pool: &Pool,
     ) -> Result<(deadpool_postgres::ClientWrapper, i64), SchemalaneError> {
@@ -512,7 +508,7 @@ impl SchemalaneMigrator {
         Ok((session, lock_id))
     }
 
-    async fn finish_locked_session<T>(
+    pub(crate) async fn finish_locked_session<T>(
         session: &Client,
         lock_id: i64,
         result: Result<T, SchemalaneError>,
@@ -664,7 +660,7 @@ impl SchemalaneMigrator {
     /// caller-configured paths), which silently hides extensions installed
     /// there — e.g. `citext` referenced as an unqualified type by tokio-postgres
     /// when binding parameters of `public.citext` columns.
-    async fn set_search_path(&self, client: &Client) -> Result<(), SchemalaneError> {
+    pub(crate) async fn set_search_path(&self, client: &Client) -> Result<(), SchemalaneError> {
         let original: String = client
             .query_one("SELECT current_setting('search_path') AS path", &[])
             .await?
