@@ -1,4 +1,7 @@
+# Mirror of mise.toml [tools].rust. mise.toml is the source; rustup, rust-analyzer, the mbx editor shim,
+# Docker rust: images and non-mise CI read this file. scripts/check-rust-toolchain-mirror.sh enforces agreement.
 [toolchain]
-channel = "1.97.1"
+channel = "1.100.0"
 profile = "minimal"
-components = ["rustfmt", "clippy"]
+components = ["clippy", "rustfmt"]
+targets = ["aarch64-unknown-linux-gnu", "x86_64-unknown-linux-gnu"]

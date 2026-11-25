@@ -1,0 +1,36 @@
+[store]
+dir = "target/nextest"
+
+[profile.default]
+# Fail-fast: stop after first test failure
+fail-fast = true
+# Generous timeout for testcontainers integration tests (DB startup + queries)
+slow-timeout = { period = "60s", terminate-after = 3 }
+
+[profile.ci]
+# Surface every failing test in one run instead of bailing on the first.
+# Avoids the round-trip-per-fix pattern when CI surfaces multiple unrelated
+# failures (e.g. a regression that breaks a dozen tests with the same root
+# cause).
+fail-fast = false
+
+# With sccache, all test jobs start tests simultaneously. After ~100 sequential
+# container create/destroy cycles in one job, Docker's overlay2/iptables state
+# accumulates enough overhead that new creates hit the 120s bollard timeout.
+# test-threads=1 serializes creates within each job; Docker has time to clean up
+# between creates. retries=0 prevents the retry spiral (was: 1 timeout → 360s).
+test-threads = 2
+retries = 0
+
+# Print failures inline AND re-print them in the final summary. Without
+# "final" the failure output scrolls off above tens of thousands of PASS
+# lines and you have to grep the raw log.
+failure-output = "immediate-final"
+
+# Show slow-test markers in the final summary so we notice tests creeping
+# toward the timeout before they actually fail.
+final-status-level = "slow"
+
+# Be more patient than profile.default — testcontainers + first-run image
+# pulls + cold cargo cache can push individual tests above the 60s default.
+slow-timeout = { period = "120s", terminate-after = 3 }

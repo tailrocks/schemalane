@@ -160,7 +160,7 @@ fn type_cell(migration_type: &str) -> Cell {
 pub(crate) fn print_status_table(report: &StatusReport) {
     let mut table = Table::new();
     table
-        .load_preset(presets::UTF8_FULL)
+        .load_style(presets::UTF8_FULL)
         .set_content_arrangement(ContentArrangement::Dynamic)
         .set_header(vec![
             Cell::new("Version")

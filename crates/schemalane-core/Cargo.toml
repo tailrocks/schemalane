@@ -5,7 +5,6 @@ version = "0.2.0"
 description = "Core migration engine for Schemalane PostgreSQL-first, forward-only migrations"
 license.workspace = true
 repository.workspace = true
-homepage.workspace = true
 rust-version.workspace = true
 documentation = "https://docs.rs/schemalane-core"
 readme = "../../README.md"
