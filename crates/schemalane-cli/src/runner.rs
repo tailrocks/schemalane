@@ -556,20 +556,20 @@ mod tests {
 
     #[test]
     fn parse_postgres_target_from_standard_url() {
-        let parsed = parse_postgres_target("postgres://chainargos:secret@localhost:40000/test3")
+        let parsed = parse_postgres_target("postgres://user:secret@localhost:5432/test3")
             .expect("should parse postgres url");
 
-        assert_eq!(parsed.user.as_deref(), Some("chainargos"));
+        assert_eq!(parsed.user.as_deref(), Some("user"));
         assert_eq!(parsed.host, "localhost");
-        assert_eq!(parsed.port, Some(40000));
+        assert_eq!(parsed.port, Some(5432));
         assert_eq!(parsed.database, "test3");
     }
 
     #[test]
     fn format_postgres_target_hides_password() {
         assert_eq!(
-            format_postgres_target("postgres://chainargos:secret@localhost:40000/test3"),
-            "chainargos@localhost:40000/test3"
+            format_postgres_target("postgres://user:secret@localhost:5432/test3"),
+            "user@localhost:5432/test3"
         );
     }
 }

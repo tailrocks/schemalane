@@ -1213,7 +1213,7 @@ INSERT INTO ledger(note) VALUES ('ok');
 
     #[test]
     fn detects_reindex_database() {
-        assert!(check_non_transactional("REINDEX DATABASE chainargos;"));
+        assert!(check_non_transactional("REINDEX DATABASE app_db;"));
     }
 
     #[test]
@@ -1223,7 +1223,7 @@ INSERT INTO ledger(note) VALUES ('ok');
 
     #[test]
     fn detects_reindex_system() {
-        assert!(check_non_transactional("REINDEX SYSTEM chainargos;"));
+        assert!(check_non_transactional("REINDEX SYSTEM app_db;"));
     }
 
     #[test]

@@ -769,14 +769,14 @@ mod tests {
 
     #[test]
     fn formats_create_table_with_many_columns() {
-        let sql = "CREATE TABLE wallet_tags.tron_amirsender_money_mules_to_binance_non_trc20_txns (txn_type varchar(256), transaction_id varchar(256), method_id varchar(256), internal_transactions varchar(256), function_name varchar(256), contract_owner varchar(256), contract_address varchar(256), caller_contract_address double precision, block_written_at varchar(256), block_number int, token varchar(256), target varchar(256), id double precision, amount double precision, _value double precision, _spender varchar(256))";
+        let sql = "CREATE TABLE reporting.wide_example_table (txn_type varchar(256), transaction_id varchar(256), method_id varchar(256), internal_transactions varchar(256), function_name varchar(256), contract_owner varchar(256), contract_address varchar(256), caller_contract_address double precision, block_written_at varchar(256), block_number int, token varchar(256), target varchar(256), id double precision, amount double precision, _value double precision, _spender varchar(256))";
         let formatted = format_statement(sql).unwrap();
         let lines: Vec<&str> = formatted.lines().collect();
 
         assert_eq!(lines.len(), 18);
         assert_eq!(
             lines[0],
-            "CREATE TABLE wallet_tags.tron_amirsender_money_mules_to_binance_non_trc20_txns ("
+            "CREATE TABLE reporting.wide_example_table ("
         );
         assert_eq!(lines[1], "    txn_type                varchar(256),");
         assert_eq!(lines[2], "    transaction_id          varchar(256),");
