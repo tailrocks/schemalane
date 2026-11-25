@@ -113,6 +113,7 @@ fn fmt_column_def_parts(cd: &ColumnDef) -> Result<ColumnParts, FormatError> {
                 ConstrType::ConstrNull => constraint_parts.push("NULL".into()),
                 ConstrType::ConstrPrimary => constraint_parts.push("PRIMARY KEY".into()),
                 ConstrType::ConstrUnique => constraint_parts.push("UNIQUE".into()),
+                ConstrType::ConstrAttrNotEnforced => constraint_parts.push("NOT ENFORCED".into()),
                 ConstrType::ConstrCheck => {
                     let mut s = String::new();
                     if !con.conname.is_empty() {
@@ -188,6 +189,9 @@ fn fmt_table_constraint(con: &Constraint) -> Result<String, FormatError> {
                 s.push_str(&fmt_node(raw)?);
             }
             s.push(')');
+            if !con.is_enforced {
+                s.push_str(" NOT ENFORCED");
+            }
         }
         ConstrType::ConstrForeign => {
             s.push_str("FOREIGN KEY (");
@@ -202,6 +206,9 @@ fn fmt_table_constraint(con: &Constraint) -> Result<String, FormatError> {
                 s.push(')');
             }
             append_fk_actions(&mut s, &con.fk_upd_action, &con.fk_del_action);
+            if !con.is_enforced {
+                s.push_str(" NOT ENFORCED");
+            }
         }
         ConstrType::ConstrExclusion => {
             s.push_str("EXCLUDE (");
@@ -622,6 +629,7 @@ fn fmt_column_def_inline(cd: &ColumnDef) -> Result<String, FormatError> {
                 }
                 ConstrType::ConstrPrimary => parts.push("PRIMARY KEY".into()),
                 ConstrType::ConstrUnique => parts.push("UNIQUE".into()),
+                ConstrType::ConstrAttrNotEnforced => parts.push("NOT ENFORCED".into()),
                 ConstrType::ConstrCheck => {
                     let mut s = String::new();
                     if !con.conname.is_empty() {

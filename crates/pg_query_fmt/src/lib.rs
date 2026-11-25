@@ -91,7 +91,7 @@ mod tests {
     use super::*;
 
     /// Schema-qualified, alias-insensitive relation names and full relation names, the
-    /// fingerprint behavior of libpg_query 17, so a formatter that changes a relation fails.
+    /// fingerprint behavior of `libpg_query` 17, so a formatter that changes a relation fails.
     fn fingerprint_options() -> pg_query::FingerprintOptions {
         pg_query::FingerprintOptions::RANGEVAR_PG17_COMPAT
             | pg_query::FingerprintOptions::FULL_RELNAME
@@ -775,6 +775,18 @@ mod tests {
     }
 
     // ── Realistic full migration (16-column table from user's bug report) ───
+
+    #[test]
+    fn keeps_not_enforced_constraints() {
+        let sql = "CREATE TABLE child (id int, parent_id int REFERENCES parent (id) NOT ENFORCED, qty int CHECK (qty > 0) NOT ENFORCED, CONSTRAINT qty_pos CHECK (qty > 1) NOT ENFORCED, FOREIGN KEY (id) REFERENCES parent (id) NOT ENFORCED)";
+        let formatted = format_statement(sql).expect("format");
+        assert_eq!(formatted.matches("NOT ENFORCED").count(), 4, "{formatted}");
+        let enforced = format_statement(
+            "CREATE TABLE c (q int CHECK (q > 0), FOREIGN KEY (q) REFERENCES p (id))",
+        )
+        .expect("format");
+        assert!(!enforced.contains("NOT ENFORCED"), "{enforced}");
+    }
 
     #[test]
     fn formats_create_table_with_many_columns() {
