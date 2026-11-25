@@ -20,6 +20,7 @@ path = "src/lib.rs"
 [dependencies]
 crc32fast = "1.5.0"
 deadpool-postgres = { workspace = true }
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
 schemalane-macros = { workspace = true }
 schemalane-version = { workspace = true }
 serde = { version = "1.0.228", features = ["derive"] }

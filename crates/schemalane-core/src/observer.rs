@@ -104,6 +104,22 @@ pub struct SqlStatementFailed {
     pub source_line: Option<u64>,
 }
 
+#[derive(Debug, Clone)]
+#[non_exhaustive]
+/// Emitted when a statement is moved into the deferred set instead of being executed.
+pub struct SqlStatementDeferred {
+    /// Identity of the migration containing the statement.
+    pub migration: MigrationInfo,
+    /// One-based position within the migration's parsed statements.
+    pub statement_index: usize,
+    /// Total parsed statements in the migration.
+    pub total_statements: usize,
+    /// SQL text recorded in the deferred set.
+    pub statement: String,
+    /// One-based source line, when the parser supplied a location.
+    pub source_line: Option<u64>,
+}
+
 /// Receives synchronous lifecycle notifications during migration execution.
 pub trait MigrationObserver: Send + Sync {
     /// Receives the reconciled plan once, before any pending migration starts.
@@ -120,6 +136,8 @@ pub trait MigrationObserver: Send + Sync {
     fn on_sql_statement_finish(&self, _event: &SqlStatementFinished) {}
     /// Receives failed SQL statement completion events.
     fn on_sql_statement_failed(&self, _event: &SqlStatementFailed) {}
+    /// Receives events for statements recorded in the deferred set instead of executed.
+    fn on_sql_statement_deferred(&self, _event: &SqlStatementDeferred) {}
 }
 #[derive(Debug, Clone, Copy, Default)]
 /// Observer implementation that intentionally discards every event.
