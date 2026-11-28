@@ -75,7 +75,7 @@ pub(crate) fn fmt_create_table(stmt: &CreateStmt) -> Result<String, FormatError>
                 all_items.push(TableItem::Constraint(text));
             }
             _ => {
-                let text = fmt_node(elt)?;
+                let text = deparse_table_element(elt)?;
                 all_items.push(TableItem::Constraint(text));
             }
         }
@@ -163,39 +163,72 @@ fn fmt_column_constraint(con: &Constraint) -> Result<ColumnConstraint, FormatErr
 /// constraint goes into a one-column table that is deparsed whole, and the text around it is
 /// cut off again.
 fn deparse_column_constraint(con: &Constraint) -> Result<String, FormatError> {
-    const PREFIX: &str = "CREATE TABLE t (c int ";
-    const SUFFIX: char = ')';
-    let deparse_error = |e: &dyn std::fmt::Display| FormatError::Deparse(e.to_string());
+    deparse_in_wrapper("CREATE TABLE t (c int ", |create| {
+        match create
+            .table_elts
+            .first_mut()
+            .and_then(|elt| elt.node.as_mut())
+        {
+            Some(Node::ColumnDef(column)) => {
+                column.constraints.push(pg_query::protobuf::Node {
+                    node: Some(Node::Constraint(Box::new(con.clone()))),
+                });
+                true
+            }
+            _ => false,
+        }
+    })
+}
 
-    let mut parsed =
-        pg_query::parse(&format!("{PREFIX}{SUFFIX}"), 0).map_err(|e| deparse_error(&e))?;
-    let column = parsed
+/// Deparse one table element that this crate has no formatting for, such as a `LIKE` clause or
+/// a constraint with temporal keys. The deparser only handles these inside a whole table.
+fn deparse_table_element(element: &pg_query::protobuf::Node) -> Result<String, FormatError> {
+    deparse_in_wrapper("CREATE TABLE t (c int, ", |create| {
+        create.table_elts.push(element.clone());
+        true
+    })
+}
+
+/// Parse `<prefix>)`, let `insert` add the element to the table, deparse the table and return
+/// the text between the prefix and the closing parenthesis.
+fn deparse_in_wrapper(
+    prefix: &str,
+    insert: impl FnOnce(&mut CreateStmt) -> bool,
+) -> Result<String, FormatError> {
+    let wrapper = |what: &str| FormatError::Deparse(format!("the deparse wrapper {what}"));
+    let mut parsed = pg_query::parse("CREATE TABLE t (c int)", 0)
+        .map_err(|e| FormatError::Deparse(e.to_string()))?;
+    let create = parsed
         .protobuf
         .stmts
         .first_mut()
         .and_then(|raw| raw.stmt.as_mut())
         .and_then(|stmt| match stmt.node.as_mut() {
-            Some(Node::CreateStmt(create)) => create.table_elts.first_mut(),
+            Some(Node::CreateStmt(create)) => Some(create),
             _ => None,
         })
-        .and_then(|elt| match elt.node.as_mut() {
-            Some(Node::ColumnDef(column)) => Some(column),
-            _ => None,
-        })
-        .ok_or_else(|| FormatError::Deparse("the constraint wrapper has no column".into()))?;
-    column.constraints.push(pg_query::protobuf::Node {
-        node: Some(Node::Constraint(Box::new(con.clone()))),
-    });
-
+        .ok_or_else(|| wrapper("has no table"))?;
+    if !insert(create) {
+        return Err(wrapper("has no column"));
+    }
     let text = pg_query::deparse(&parsed.protobuf, pg_query::DeparseOptions::default())
-        .map_err(|e| deparse_error(&e))?;
-    text.strip_prefix(PREFIX)
-        .and_then(|rest| rest.strip_suffix(SUFFIX))
+        .map_err(|e| FormatError::Deparse(e.to_string()))?;
+    text.strip_prefix(prefix)
+        .and_then(|rest| rest.strip_suffix(')'))
         .map(str::to_owned)
-        .ok_or_else(|| FormatError::Deparse(format!("unexpected deparse of a constraint: {text}")))
+        .ok_or_else(|| FormatError::Deparse(format!("unexpected deparse of a table: {text}")))
 }
 
+/// Format one table-level constraint. CHECK keeps the expression formatting of this crate, and
+/// so does a plain key or reference. Any constraint with a clause that formatting does not
+/// render (temporal keys, `INCLUDE`, `MATCH`, deferral, `NULLS NOT DISTINCT`, index options)
+/// goes through the `pg_query` deparser instead, so no clause can vanish.
 fn fmt_table_constraint(con: &Constraint) -> Result<String, FormatError> {
+    if !is_plain_table_constraint(con) {
+        return deparse_table_element(&pg_query::protobuf::Node {
+            node: Some(Node::Constraint(Box::new(con.clone()))),
+        });
+    }
     let mut s = String::new();
     if !con.conname.is_empty() {
         s.push_str("CONSTRAINT ");
@@ -210,14 +243,9 @@ fn fmt_table_constraint(con: &Constraint) -> Result<String, FormatError> {
             s.push(')');
         }
         ConstrType::ConstrUnique => {
-            if con.indexname.is_empty() {
-                s.push_str("UNIQUE (");
-                s.push_str(&node_string_list(&con.keys).join(", "));
-                s.push(')');
-            } else {
-                s.push_str("UNIQUE USING INDEX ");
-                s.push_str(&con.indexname);
-            }
+            s.push_str("UNIQUE (");
+            s.push_str(&node_string_list(&con.keys).join(", "));
+            s.push(')');
         }
         ConstrType::ConstrCheck => {
             s.push_str("CHECK (");
@@ -246,25 +274,64 @@ fn fmt_table_constraint(con: &Constraint) -> Result<String, FormatError> {
                 s.push_str(" NOT ENFORCED");
             }
         }
-        ConstrType::ConstrExclusion => {
-            s.push_str("EXCLUDE (");
-            let items: Vec<String> = con
-                .exclusions
-                .iter()
-                .map(fmt_node)
-                .collect::<Result<_, _>>()?;
-            s.push_str(&items.join(", "));
-            s.push(')');
-        }
-        _ => {
-            let node = Node::Constraint(Box::new(con.clone()));
-            s = node
-                .deparse(pg_query::DeparseOptions::default())
-                .map_err(|e| FormatError::Deparse(e.to_string()))?;
-        }
+        _ => unreachable!("is_plain_table_constraint admits only keys, references and CHECK"),
     }
 
     Ok(s)
+}
+
+/// Whether the plain formatting above renders every clause of the constraint. It does when the
+/// constraint equals a bare one of its kind once the fields that formatting reads are cleared,
+/// so a field that `pg_query` adds later makes the constraint non-plain instead of lost.
+fn is_plain_table_constraint(con: &Constraint) -> bool {
+    let (bare_sql, kind) = match ConstrType::try_from(con.contype) {
+        Ok(ConstrType::ConstrPrimary) => ("PRIMARY KEY (a)", ConstrType::ConstrPrimary),
+        Ok(ConstrType::ConstrUnique) if con.indexname.is_empty() => {
+            ("UNIQUE (a)", ConstrType::ConstrUnique)
+        }
+        Ok(ConstrType::ConstrCheck) => ("CHECK (a > 0)", ConstrType::ConstrCheck),
+        Ok(ConstrType::ConstrForeign) => (
+            "FOREIGN KEY (a) REFERENCES p (a)",
+            ConstrType::ConstrForeign,
+        ),
+        _ => return false,
+    };
+    let Some(bare) = bare_table_constraint(bare_sql, kind) else {
+        return false;
+    };
+    read_fields_cleared(con) == read_fields_cleared(&bare)
+}
+
+fn bare_table_constraint(sql: &str, kind: ConstrType) -> Option<Constraint> {
+    let parsed = pg_query::parse(&format!("CREATE TABLE t (a int, {sql})"), 0).ok()?;
+    let stmt = parsed.protobuf.stmts.into_iter().next()?.stmt?;
+    let Some(Node::CreateStmt(create)) = stmt.node else {
+        return None;
+    };
+    create
+        .table_elts
+        .into_iter()
+        .find_map(|elt| match elt.node {
+            Some(Node::Constraint(con)) if con.contype == kind as i32 => Some(*con),
+            _ => None,
+        })
+}
+
+/// The constraint without the fields that `fmt_table_constraint` reads.
+fn read_fields_cleared(con: &Constraint) -> Constraint {
+    Constraint {
+        conname: String::new(),
+        raw_expr: None,
+        keys: Vec::new(),
+        pktable: None,
+        fk_attrs: Vec::new(),
+        pk_attrs: Vec::new(),
+        fk_upd_action: String::new(),
+        fk_del_action: String::new(),
+        is_enforced: true,
+        location: 0,
+        ..con.clone()
+    }
 }
 
 fn append_fk_actions(s: &mut String, upd_action: &str, del_action: &str) {
@@ -330,7 +397,7 @@ pub(crate) fn fmt_create_foreign_table(
                     all_items.push(TableItem::Constraint(text));
                 }
                 _ => {
-                    let text = fmt_node(elt)?;
+                    let text = deparse_table_element(elt)?;
                     all_items.push(TableItem::Constraint(text));
                 }
             }

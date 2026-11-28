@@ -852,6 +852,58 @@ mod tests {
     }
 
     #[test]
+    fn keeps_every_table_element() {
+        // Same shape as `keeps_every_column_constraint`, for table-level constraints and the
+        // elements that are not columns.
+        for (sql, kept) in [
+            (
+                "CREATE TABLE t (id int, valid_at daterange, PRIMARY KEY (id, valid_at WITHOUT OVERLAPS))",
+                "WITHOUT OVERLAPS",
+            ),
+            (
+                "CREATE TABLE t (id int, valid_at daterange, UNIQUE (id, valid_at WITHOUT OVERLAPS))",
+                "WITHOUT OVERLAPS",
+            ),
+            (
+                "CREATE TABLE t (id int, valid_at daterange, FOREIGN KEY (id, PERIOD valid_at) REFERENCES p (id, PERIOD valid_at))",
+                "PERIOD",
+            ),
+            (
+                "CREATE TABLE t (id int, UNIQUE NULLS NOT DISTINCT (id))",
+                "NULLS NOT DISTINCT",
+            ),
+            (
+                "CREATE TABLE t (id int, PRIMARY KEY (id) INCLUDE (id))",
+                "INCLUDE",
+            ),
+            (
+                "CREATE TABLE t (id int, FOREIGN KEY (id) REFERENCES p (id) MATCH FULL DEFERRABLE INITIALLY DEFERRED)",
+                "MATCH FULL",
+            ),
+            (
+                "CREATE TABLE t (id int, FOREIGN KEY (id) REFERENCES p (id) ON DELETE SET NULL (id))",
+                "SET NULL",
+            ),
+            (
+                "CREATE TABLE t (id int, EXCLUDE USING gist (id WITH =))",
+                "EXCLUDE",
+            ),
+            ("CREATE TABLE t (LIKE src INCLUDING ALL)", "INCLUDING ALL"),
+            (
+                "CREATE FOREIGN TABLE ft (LIKE src INCLUDING ALL) SERVER s",
+                "INCLUDING ALL",
+            ),
+        ] {
+            assert_round_trips(sql);
+            let formatted = format_statement(sql).expect("format");
+            assert!(
+                formatted.contains(kept),
+                "dropped `{kept}`:\ninput:  {sql}\noutput: {formatted}"
+            );
+        }
+    }
+
+    #[test]
     fn formats_create_table_with_many_columns() {
         let sql = "CREATE TABLE wallet_tags.tron_amirsender_money_mules_to_binance_non_trc20_txns (txn_type varchar(256), transaction_id varchar(256), method_id varchar(256), internal_transactions varchar(256), function_name varchar(256), contract_owner varchar(256), contract_address varchar(256), caller_contract_address double precision, block_written_at varchar(256), block_number int, token varchar(256), target varchar(256), id double precision, amount double precision, _value double precision, _spender varchar(256))";
         let formatted = format_statement(sql).unwrap();
