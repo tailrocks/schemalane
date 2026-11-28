@@ -14,17 +14,18 @@ get() { mise config get --file "$1" "$2" 2>/dev/null || true; }
 # '["b", "a"]' -> 'a,b'; '"x"' -> 'x'
 norm() { tr -d ' "[]\r' | tr ',' '\n' | sed '/^$/d' | LC_ALL=C sort | paste -sd, -; }
 
-# `rust = "1.100.0"` (string) or `rust = { version = ... }` (table).
+# `rust = "1.100.0"` (string: mise prints the bare scalar) or `rust = { version = ... }` (table:
+# mise prints its `key = value` lines; a version never contains `=`).
 raw=$(get "$mise_file" tools.rust)
 case "$raw" in
   '') echo "rust-toolchain-mirror: $mise_file has no tools.rust pin" >&2; exit 1 ;;
-  '"'*) m_channel=$(printf '%s' "$raw" | norm); m_profile=; m_components=; m_targets= ;;
-  *)
+  *=*)
     m_channel=$(get "$mise_file" tools.rust.version | norm)
     m_profile=$(get "$mise_file" tools.rust.profile | norm)
     m_components=$(get "$mise_file" tools.rust.components | norm)
     m_targets=$(get "$mise_file" tools.rust.targets | norm)
     ;;
+  *) m_channel=$(printf '%s' "$raw" | norm); m_profile=; m_components=; m_targets= ;;
 esac
 r_channel=$(get "$rtt_file" toolchain.channel | norm)
 r_profile=$(get "$rtt_file" toolchain.profile | norm)
