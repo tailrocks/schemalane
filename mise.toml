@@ -24,6 +24,9 @@ shellcheck = "0.11.0"
 # release has no macOS asset, so macOS builds the same commit from source.
 # The version here must equal the version in .velnor/rust-ci.lock.
 # Bump both with `velnor-gen pin-helper <version>`.
+# mise.lock points the linux-arm64 rows at the aarch64 archive by hand: one
+# asset_pattern cannot name an archive per architecture, so `mise lock` writes
+# the x86_64 archive there. Rerun the fix after every `mise lock`.
 "github:tailrocks/velnor-new" = { version = "tools-v0.1.116", asset_pattern = "velnor-gen-*-unknown-linux-musl.tar.gz", os = ["linux"] }
 "cargo:https://github.com/tailrocks/velnor-new" = { version = "rev:5e3c38d6eca734106e0f2b0e677f9191be26c012", crate = "velnor-gen", os = ["macos"] }
 # pg_query (the SQL parser behind schemalane) needs a system protoc
