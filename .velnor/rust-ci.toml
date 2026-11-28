@@ -14,3 +14,11 @@ skip_push_after_merge_group = true
 [[lint]]
 kind = "jactionlint"
 config = ".github/jactionlint.yaml"
+
+[[lint]]
+kind = "mise-task"
+id = "rust-toolchain-mirror"
+name = "Rust toolchain mirror"
+task = "check-rust-toolchain-mirror"
+timeout_minutes = 5
+inputs = ["mise.toml", "rust-toolchain.toml", "scripts/check-rust-toolchain-mirror.sh"]

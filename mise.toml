@@ -20,6 +20,12 @@ rumdl = "0.3.0"
 jactionlint = "2.3.0"
 shellcheck = "0.11.0"
 "aqua:nextest-rs/nextest/cargo-nextest" = "0.9.149"
+# velnor-gen writes the CI workflows. Linux takes the release asset. The
+# release has no macOS asset, so macOS builds the same commit from source.
+# The version here must equal the version in .velnor/rust-ci.lock.
+# Bump both with `velnor-gen pin-helper <version>`.
+"github:tailrocks/velnor-new" = { version = "tools-v0.1.116", asset_pattern = "velnor-gen-*-unknown-linux-musl.tar.gz", os = ["linux"] }
+"cargo:https://github.com/tailrocks/velnor-new" = { version = "rev:5e3c38d6eca734106e0f2b0e677f9191be26c012", crate = "velnor-gen", os = ["macos"] }
 # pg_query (the SQL parser behind schemalane) needs a system protoc
 protoc = "36.2"
 
@@ -51,3 +57,11 @@ run = "cargo clippy --workspace --all-targets --locked -- -D warnings"
 [tasks.fmt]
 description = "Check Rust formatting"
 run = "cargo fmt --all -- --check"
+
+[tasks.ci-generated]
+description = "Fail when a generated workflow differs from velnor-gen output"
+run = "velnor-gen --root . check"
+
+[tasks.check-rust-toolchain-mirror]
+description = "Fail unless rust-toolchain.toml mirrors the mise.toml rust pin"
+run = "sh scripts/check-rust-toolchain-mirror.sh"

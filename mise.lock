@@ -94,6 +94,34 @@ checksum_source = "mise-versions"
 url = "https://github.com/EmbarkStudios/cargo-deny/releases/download/0.20.2/cargo-deny-0.20.2-aarch64-apple-darwin.tar.gz"
 url_api = "https://api.github.com/repos/EmbarkStudios/cargo-deny/releases/assets/471597689"
 
+[[tools."cargo:https://github.com/tailrocks/velnor-new"]]
+version = "rev:5e3c38d6eca734106e0f2b0e677f9191be26c012"
+backend = "cargo:https://github.com/tailrocks/velnor-new"
+specifiers = ["rev:5e3c38d6eca734106e0f2b0e677f9191be26c012"]
+
+[tools."cargo:https://github.com/tailrocks/velnor-new".options]
+crate = "velnor-gen"
+
+[[tools."github:tailrocks/velnor-new"]]
+version = "tools-v0.1.116"
+backend = "github:tailrocks/velnor-new"
+specifiers = ["tools-v0.1.116"]
+
+[tools."github:tailrocks/velnor-new".options]
+asset_pattern = "velnor-gen-*-unknown-linux-musl.tar.gz"
+
+[tools."github:tailrocks/velnor-new"."platforms.linux-arm64"]
+checksum = "sha256:debe92a8421c43f8141e394dc722d2f8678f037cebe0a050d865a22c8820a878"
+url = "https://github.com/tailrocks/velnor-new/releases/download/tools-v0.1.116/velnor-gen-x86_64-unknown-linux-musl.tar.gz"
+url_api = "https://api.github.com/repos/tailrocks/velnor-new/releases/assets/790583845"
+provenance = "github-attestations"
+
+[tools."github:tailrocks/velnor-new"."platforms.linux-x64"]
+checksum = "sha256:debe92a8421c43f8141e394dc722d2f8678f037cebe0a050d865a22c8820a878"
+url = "https://github.com/tailrocks/velnor-new/releases/download/tools-v0.1.116/velnor-gen-x86_64-unknown-linux-musl.tar.gz"
+url_api = "https://api.github.com/repos/tailrocks/velnor-new/releases/assets/790583845"
+provenance = "github-attestations"
+
 [[tools.gitleaks]]
 version = "8.30.1"
 backend = "aqua:gitleaks/gitleaks"
