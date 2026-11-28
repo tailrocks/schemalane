@@ -22,3 +22,6 @@ name = "Rust toolchain mirror"
 task = "check-rust-toolchain-mirror"
 timeout_minutes = 5
 inputs = ["mise.toml", "rust-toolchain.toml", "scripts/check-rust-toolchain-mirror.sh"]
+
+[[lint]]
+kind = "generated-check"
