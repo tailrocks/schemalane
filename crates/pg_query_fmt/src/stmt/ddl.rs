@@ -101,52 +101,9 @@ fn fmt_column_def_parts(cd: &ColumnDef) -> Result<ColumnParts, FormatError> {
 
     for c in &cd.constraints {
         if let Some(Node::Constraint(con)) = c.node.as_ref() {
-            let contype = ConstrType::try_from(con.contype).unwrap_or(ConstrType::Undefined);
-            match contype {
-                ConstrType::ConstrDefault => {
-                    if let Some(ref raw) = con.raw_expr {
-                        let expr = fmt_node(raw)?;
-                        default_expr = Some(format!("DEFAULT {expr}"));
-                    }
-                }
-                ConstrType::ConstrNotnull => constraint_parts.push("NOT NULL".into()),
-                ConstrType::ConstrNull => constraint_parts.push("NULL".into()),
-                ConstrType::ConstrPrimary => constraint_parts.push("PRIMARY KEY".into()),
-                ConstrType::ConstrUnique => constraint_parts.push("UNIQUE".into()),
-                ConstrType::ConstrAttrNotEnforced => constraint_parts.push("NOT ENFORCED".into()),
-                ConstrType::ConstrCheck => {
-                    let mut s = String::new();
-                    if !con.conname.is_empty() {
-                        s.push_str("CONSTRAINT ");
-                        s.push_str(&con.conname);
-                        s.push(' ');
-                    }
-                    s.push_str("CHECK (");
-                    if let Some(ref raw) = con.raw_expr {
-                        s.push_str(&fmt_node(raw)?);
-                    }
-                    s.push(')');
-                    constraint_parts.push(s);
-                }
-                ConstrType::ConstrForeign => {
-                    let mut s = String::new();
-                    if !con.conname.is_empty() {
-                        s.push_str("CONSTRAINT ");
-                        s.push_str(&con.conname);
-                        s.push(' ');
-                    }
-                    s.push_str("REFERENCES ");
-                    if let Some(ref pktable) = con.pktable {
-                        s.push_str(&fmt_range_var(pktable));
-                    }
-                    if !con.pk_attrs.is_empty() {
-                        let attrs = node_string_list(&con.pk_attrs);
-                        let _ = write!(s, " ({})", attrs.join(", "));
-                    }
-                    append_fk_actions(&mut s, &con.fk_upd_action, &con.fk_del_action);
-                    constraint_parts.push(s);
-                }
-                _ => {}
+            match fmt_column_constraint(con)? {
+                ColumnConstraint::Default(text) => default_expr = Some(text),
+                ColumnConstraint::Other(text) => constraint_parts.push(text),
             }
         }
     }
@@ -157,6 +114,85 @@ fn fmt_column_def_parts(cd: &ColumnDef) -> Result<ColumnParts, FormatError> {
         default_expr,
         constraints: constraint_parts.join(" "),
     })
+}
+
+/// A column constraint, with DEFAULT apart so a table can align it in a column of its own.
+enum ColumnConstraint {
+    Default(String),
+    Other(String),
+}
+
+/// Format one constraint of a column definition.
+///
+/// DEFAULT and CHECK keep the expression formatting of this crate. Every other kind goes through
+/// the `pg_query` deparser, which covers each clause of the constraint (names, `NO INHERIT`,
+/// `STORED` and `VIRTUAL`, identity options, deferral and `NULLS NOT DISTINCT`). A constraint is
+/// never skipped: an unlisted kind used to vanish from the output and change the statement.
+fn fmt_column_constraint(con: &Constraint) -> Result<ColumnConstraint, FormatError> {
+    match ConstrType::try_from(con.contype).unwrap_or(ConstrType::Undefined) {
+        ConstrType::ConstrDefault => {
+            let mut s = String::from("DEFAULT");
+            if let Some(ref raw) = con.raw_expr {
+                s.push(' ');
+                s.push_str(&fmt_node(raw)?);
+            }
+            Ok(ColumnConstraint::Default(s))
+        }
+        ConstrType::ConstrCheck => {
+            let mut s = String::new();
+            if !con.conname.is_empty() {
+                s.push_str("CONSTRAINT ");
+                s.push_str(&con.conname);
+                s.push(' ');
+            }
+            s.push_str("CHECK (");
+            if let Some(ref raw) = con.raw_expr {
+                s.push_str(&fmt_node(raw)?);
+            }
+            s.push(')');
+            if !con.is_enforced {
+                s.push_str(" NOT ENFORCED");
+            }
+            Ok(ColumnConstraint::Other(s))
+        }
+        _ => deparse_column_constraint(con).map(ColumnConstraint::Other),
+    }
+}
+
+/// Deparse one column constraint. The deparser rejects a bare `Constraint` node, so the
+/// constraint goes into a one-column table that is deparsed whole, and the text around it is
+/// cut off again.
+fn deparse_column_constraint(con: &Constraint) -> Result<String, FormatError> {
+    const PREFIX: &str = "CREATE TABLE t (c int ";
+    const SUFFIX: char = ')';
+    let deparse_error = |e: &dyn std::fmt::Display| FormatError::Deparse(e.to_string());
+
+    let mut parsed =
+        pg_query::parse(&format!("{PREFIX}{SUFFIX}"), 0).map_err(|e| deparse_error(&e))?;
+    let column = parsed
+        .protobuf
+        .stmts
+        .first_mut()
+        .and_then(|raw| raw.stmt.as_mut())
+        .and_then(|stmt| match stmt.node.as_mut() {
+            Some(Node::CreateStmt(create)) => create.table_elts.first_mut(),
+            _ => None,
+        })
+        .and_then(|elt| match elt.node.as_mut() {
+            Some(Node::ColumnDef(column)) => Some(column),
+            _ => None,
+        })
+        .ok_or_else(|| FormatError::Deparse("the constraint wrapper has no column".into()))?;
+    column.constraints.push(pg_query::protobuf::Node {
+        node: Some(Node::Constraint(Box::new(con.clone()))),
+    });
+
+    let text = pg_query::deparse(&parsed.protobuf, pg_query::DeparseOptions::default())
+        .map_err(|e| deparse_error(&e))?;
+    text.strip_prefix(PREFIX)
+        .and_then(|rest| rest.strip_suffix(SUFFIX))
+        .map(str::to_owned)
+        .ok_or_else(|| FormatError::Deparse(format!("unexpected deparse of a constraint: {text}")))
 }
 
 fn fmt_table_constraint(con: &Constraint) -> Result<String, FormatError> {
@@ -619,32 +655,10 @@ fn fmt_column_def_inline(cd: &ColumnDef) -> Result<String, FormatError> {
 
     for c in &cd.constraints {
         if let Some(Node::Constraint(con)) = c.node.as_ref() {
-            match ConstrType::try_from(con.contype).unwrap_or(ConstrType::Undefined) {
-                ConstrType::ConstrNotnull => parts.push("NOT NULL".into()),
-                ConstrType::ConstrNull => parts.push("NULL".into()),
-                ConstrType::ConstrDefault => {
-                    if let Some(ref raw) = con.raw_expr {
-                        parts.push(format!("DEFAULT {}", fmt_node(raw)?));
-                    }
+            match fmt_column_constraint(con)? {
+                ColumnConstraint::Default(text) | ColumnConstraint::Other(text) => {
+                    parts.push(text);
                 }
-                ConstrType::ConstrPrimary => parts.push("PRIMARY KEY".into()),
-                ConstrType::ConstrUnique => parts.push("UNIQUE".into()),
-                ConstrType::ConstrAttrNotEnforced => parts.push("NOT ENFORCED".into()),
-                ConstrType::ConstrCheck => {
-                    let mut s = String::new();
-                    if !con.conname.is_empty() {
-                        s.push_str("CONSTRAINT ");
-                        s.push_str(&con.conname);
-                        s.push(' ');
-                    }
-                    s.push_str("CHECK (");
-                    if let Some(ref raw) = con.raw_expr {
-                        s.push_str(&fmt_node(raw)?);
-                    }
-                    s.push(')');
-                    parts.push(s);
-                }
-                _ => {}
             }
         }
     }
