@@ -46,7 +46,7 @@ pub(crate) fn fmt_node_inner(node: &Node) -> Result<String, FormatError> {
         Node::Boolean(b) => Ok(if b.boolval { "true" } else { "false" }.into()),
         Node::SelectStmt(s) => crate::stmt::fmt_select_stmt(s),
         _ => node
-            .deparse()
+            .deparse(pg_query::DeparseOptions::default())
             .map_err(|e| FormatError::Deparse(e.to_string())),
     }
 }
@@ -979,6 +979,6 @@ fn fmt_frame_clause(wd: &pg_query::protobuf::WindowDef) -> Result<Option<String>
 // ── Fallback ────────────────────────────────────────────────────────────────
 
 fn node_deparse_fallback(node: &Node) -> Result<String, FormatError> {
-    node.deparse()
+    node.deparse(pg_query::DeparseOptions::default())
         .map_err(|e| FormatError::Deparse(e.to_string()))
 }

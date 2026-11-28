@@ -1,0 +1,45 @@
+# Baseline cargo-deny policy (hk builtin cargo_deny runs `cargo-deny --locked --workspace check`).
+# Extend [licenses].allow / exceptions for what `cargo deny check licenses` reports, and list every forked git
+# dependency under [sources].allow-git (keep unknown-git = "deny").
+[graph]
+targets = [
+    "aarch64-unknown-linux-gnu",
+    "x86_64-unknown-linux-gnu",
+]
+
+[advisories]
+yanked = "deny"
+ignore = [
+    # { id = "RUSTSEC-0000-0000", reason = "why it cannot be fixed yet" },
+    { id = "RUSTSEC-2026-0440", reason = "astral-tokio-tar is unmaintained with no safe upgrade; it is a dev-only dependency of testcontainers, used by the PostgreSQL integration tests and never shipped." },
+]
+
+[licenses]
+allow = [
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "BSL-1.0",
+    "CC0-1.0",
+    "ISC",
+    "MIT",
+    "MIT-0",
+    "MPL-2.0",
+    "Unicode-3.0",
+    "Unlicense",
+    "Zlib",
+]
+confidence-threshold = 0.8
+# Workspace crates with `publish = false` have no license field.
+private = { ignore = true }
+
+[bans]
+multiple-versions = "warn"
+wildcards = "allow"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

@@ -1,0 +1,383 @@
+{
+  "roots": {
+    "Cargo.toml": {
+      "target_dir": "target",
+      "members": [
+        {
+          "name": "schemalane-core",
+          "version": "0.2.0",
+          "manifest": "crates/schemalane-core/Cargo.toml",
+          "dependencies": [
+            {
+              "name": "crc32fast",
+              "kind": "normal",
+              "manifest": null
+            },
+            {
+              "name": "deadpool-postgres",
+              "kind": "normal",
+              "manifest": null
+            },
+            {
+              "name": "pg_query",
+              "kind": "normal",
+              "manifest": null
+            },
+            {
+              "name": "schemalane-macros",
+              "kind": "normal",
+              "manifest": "crates/schemalane-macros/Cargo.toml"
+            },
+            {
+              "name": "schemalane-version",
+              "kind": "normal",
+              "manifest": "crates/schemalane-version/Cargo.toml"
+            },
+            {
+              "name": "serde",
+              "kind": "normal",
+              "manifest": null,
+              "features": [
+                "derive"
+              ]
+            },
+            {
+              "name": "thiserror",
+              "kind": "normal",
+              "manifest": null
+            },
+            {
+              "name": "tokio-postgres",
+              "kind": "normal",
+              "manifest": null
+            },
+            {
+              "name": "tempfile",
+              "kind": "dev",
+              "manifest": null
+            },
+            {
+              "name": "testcontainers-modules",
+              "kind": "dev",
+              "manifest": null,
+              "features": [
+                "postgres",
+                "blocking",
+                "aws-lc-rs"
+              ]
+            },
+            {
+              "name": "tokio",
+              "kind": "dev",
+              "manifest": null,
+              "features": [
+                "rt-multi-thread",
+                "time"
+              ]
+            },
+            {
+              "name": "tokio-postgres",
+              "kind": "dev",
+              "manifest": null
+            }
+          ],
+          "targets": [
+            {
+              "name": "schemalane_core",
+              "kinds": [
+                "lib"
+              ],
+              "tests": true,
+              "doctest": true,
+              "source": "crates/schemalane-core/src/lib.rs",
+              "requires_features": false
+            },
+            {
+              "name": "documentation_examples",
+              "kinds": [
+                "test"
+              ],
+              "tests": true,
+              "doctest": false,
+              "source": "crates/schemalane-core/tests/documentation_examples.rs",
+              "requires_features": false
+            },
+            {
+              "name": "postgres_integration",
+              "kinds": [
+                "test"
+              ],
+              "tests": true,
+              "doctest": false,
+              "source": "crates/schemalane-core/tests/postgres_integration.rs",
+              "requires_features": false
+            }
+          ]
+        },
+        {
+          "name": "schemalane-macros",
+          "version": "0.1.1",
+          "manifest": "crates/schemalane-macros/Cargo.toml",
+          "dependencies": [
+            {
+              "name": "proc-macro2",
+              "kind": "normal",
+              "manifest": null
+            },
+            {
+              "name": "quote",
+              "kind": "normal",
+              "manifest": null
+            },
+            {
+              "name": "schemalane-version",
+              "kind": "normal",
+              "manifest": "crates/schemalane-version/Cargo.toml"
+            },
+            {
+              "name": "syn",
+              "kind": "normal",
+              "manifest": null,
+              "features": [
+                "parsing"
+              ]
+            },
+            {
+              "name": "trybuild",
+              "kind": "dev",
+              "manifest": null
+            }
+          ],
+          "targets": [
+            {
+              "name": "schemalane_macros",
+              "kinds": [
+                "proc-macro"
+              ],
+              "tests": true,
+              "doctest": true,
+              "source": "crates/schemalane-macros/src/lib.rs",
+              "requires_features": false
+            },
+            {
+              "name": "trybuild",
+              "kinds": [
+                "test"
+              ],
+              "tests": true,
+              "doctest": false,
+              "source": "crates/schemalane-macros/tests/trybuild.rs",
+              "requires_features": false
+            }
+          ]
+        },
+        {
+          "name": "schemalane-version",
+          "version": "0.1.0",
+          "manifest": "crates/schemalane-version/Cargo.toml",
+          "dependencies": [],
+          "targets": [
+            {
+              "name": "schemalane_version",
+              "kinds": [
+                "lib"
+              ],
+              "tests": true,
+              "doctest": true,
+              "source": "crates/schemalane-version/src/lib.rs",
+              "requires_features": false
+            }
+          ]
+        },
+        {
+          "name": "schemalane-cli",
+          "version": "0.2.0",
+          "manifest": "crates/schemalane-cli/Cargo.toml",
+          "dependencies": [
+            {
+              "name": "clap",
+              "kind": "normal",
+              "manifest": null,
+              "features": [
+                "derive",
+                "env"
+              ]
+            },
+            {
+              "name": "comfy-table",
+              "kind": "normal",
+              "manifest": null
+            },
+            {
+              "name": "deadpool-postgres",
+              "kind": "normal",
+              "manifest": null
+            },
+            {
+              "name": "owo-colors",
+              "kind": "normal",
+              "manifest": null,
+              "features": [
+                "supports-colors"
+              ]
+            },
+            {
+              "name": "pg_query_fmt",
+              "kind": "normal",
+              "manifest": "crates/pg_query_fmt/Cargo.toml"
+            },
+            {
+              "name": "rustls",
+              "kind": "normal",
+              "manifest": null
+            },
+            {
+              "name": "rustls-platform-verifier",
+              "kind": "normal",
+              "manifest": null
+            },
+            {
+              "name": "schemalane-core",
+              "kind": "normal",
+              "manifest": "crates/schemalane-core/Cargo.toml"
+            },
+            {
+              "name": "schemalane-version",
+              "kind": "normal",
+              "manifest": "crates/schemalane-version/Cargo.toml"
+            },
+            {
+              "name": "serde_json",
+              "kind": "normal",
+              "manifest": null
+            },
+            {
+              "name": "tokio",
+              "kind": "normal",
+              "manifest": null,
+              "features": [
+                "macros",
+                "rt-multi-thread"
+              ]
+            },
+            {
+              "name": "tokio-postgres",
+              "kind": "normal",
+              "manifest": null
+            },
+            {
+              "name": "tokio-postgres-rustls",
+              "kind": "normal",
+              "manifest": null
+            },
+            {
+              "name": "temp-env",
+              "kind": "dev",
+              "manifest": null
+            }
+          ],
+          "targets": [
+            {
+              "name": "schemalane_cli",
+              "kinds": [
+                "lib"
+              ],
+              "tests": true,
+              "doctest": true,
+              "source": "crates/schemalane-cli/src/lib.rs",
+              "requires_features": false
+            },
+            {
+              "name": "schemalane",
+              "kinds": [
+                "bin"
+              ],
+              "tests": true,
+              "doctest": false,
+              "source": "crates/schemalane-cli/src/main.rs",
+              "requires_features": false
+            }
+          ]
+        },
+        {
+          "name": "pg_query_fmt",
+          "version": "0.1.4",
+          "manifest": "crates/pg_query_fmt/Cargo.toml",
+          "dependencies": [
+            {
+              "name": "owo-colors",
+              "kind": "normal",
+              "manifest": null
+            },
+            {
+              "name": "pg_query",
+              "kind": "normal",
+              "manifest": null
+            },
+            {
+              "name": "thiserror",
+              "kind": "normal",
+              "manifest": null
+            }
+          ],
+          "targets": [
+            {
+              "name": "pg_query_fmt",
+              "kinds": [
+                "lib"
+              ],
+              "tests": true,
+              "doctest": true,
+              "source": "crates/pg_query_fmt/src/lib.rs",
+              "requires_features": false
+            }
+          ]
+        },
+        {
+          "name": "schemalane-embed-tests",
+          "version": "0.0.0",
+          "manifest": "crates/schemalane-embed-tests/Cargo.toml",
+          "dependencies": [
+            {
+              "name": "schemalane-cli",
+              "kind": "normal",
+              "manifest": "crates/schemalane-cli/Cargo.toml"
+            },
+            {
+              "name": "schemalane-core",
+              "kind": "normal",
+              "manifest": "crates/schemalane-core/Cargo.toml"
+            },
+            {
+              "name": "tokio-postgres",
+              "kind": "normal",
+              "manifest": null
+            }
+          ],
+          "targets": [
+            {
+              "name": "schemalane_embed_tests",
+              "kinds": [
+                "lib"
+              ],
+              "tests": true,
+              "doctest": true,
+              "source": "crates/schemalane-embed-tests/src/lib.rs",
+              "requires_features": false
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "manifests": {
+    "Cargo.toml": "ac33ff0a74604d00d4e1aedc950546d5e8d2835f960bc7123a0fd3d034c84733",
+    "crates/pg_query_fmt/Cargo.toml": "68ce7c6d2924331f475cf591ce9f271bc3f84c234828282b191f42670ebac4ba",
+    "crates/schemalane-cli/Cargo.toml": "3cb809250eaa13637cfe1e1791c5ef88e5c623fe924d745921bced8453f3a1b9",
+    "crates/schemalane-core/Cargo.toml": "7913b511540a128388834534800629eee3768566ecf79c03dbaf3ff2eccb86e6",
+    "crates/schemalane-embed-tests/Cargo.toml": "6e519496b33c76c4945a9e84b34aa6c3b9f0b956343bcbbe7f79f0725b53a373",
+    "crates/schemalane-macros/Cargo.toml": "3ebd554246a63859a4998ae8e2dd509b5f4b38ba8017c5d52b16a63a1bdc5296",
+    "crates/schemalane-version/Cargo.toml": "815f54fdf03dd1130e82c8302a9ecb12c08c9f993397b7b79dfa80a3d8fd2f69"
+  },
+  "layout": "7b5a50043d6bb609b81b15cc3e919783c43219b3e17c80ee87812fbbac6102e3"
+}

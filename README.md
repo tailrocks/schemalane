@@ -4,9 +4,6 @@ PostgreSQL-first, forward-only migrations with SQL as default and optional Rust 
 
 ## Repository map
 
-<!-- MAP:BEGIN -->
-> Workspace tier · drift-checked in `mise run fleet:check` · details live in each component's README
-
 | Path | What lives here |
 |---|---|
 | [`crates/`](crates/) | Rust workspace members |
@@ -19,7 +16,6 @@ PostgreSQL-first, forward-only migrations with SQL as default and optional Rust 
 | [`docs/`](docs/) | Research and supporting documentation |
 | [`plans/`](plans/) | Completed direction-spike decision records |
 | [`scripts/`](scripts/) | Repository verification scripts |
-<!-- MAP:END -->
 
 Repository layout:
 
@@ -44,14 +40,14 @@ Schemalane CLI supports:
 Fast unit tests (no Docker):
 
 ```sh
-cargo nextest run --workspace --locked
+mise run test
 ```
 
 Full suite including PostgreSQL integration tests (requires a running Docker daemon;
 testcontainers starts a disposable Postgres per test):
 
 ```sh
-cargo nextest run -p schemalane-core --locked --test postgres_integration --run-ignored all
+mise run test-integration
 ```
 
 ## Local CLI Testing
